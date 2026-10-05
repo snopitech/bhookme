@@ -1,0 +1,12 @@
+{"properties": [
+  {
+    "name": "stripe.webhook.secret",
+    "type": "java.lang.String",
+    "description": "A description for 'stripe.webhook.secret'"
+  },
+  {
+    "name": "r2.endpoint",
+    "type": "java.lang.String",
+    "description": "A description for 'r2.endpoint'"
+  }
+]}

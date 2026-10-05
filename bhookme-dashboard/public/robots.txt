@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+
+Disallow: /admin/
+Disallow: /host/dashboard
+Disallow: /tenant-dashboard
+Disallow: /messages
+Disallow: /wishlist
+Disallow: /profile
+Disallow: /cart
+Disallow: /checkout
+
+Sitemap: https://bhookme.com/sitemap.xml

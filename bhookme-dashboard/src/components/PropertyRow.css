@@ -1,0 +1,58 @@
+.property-row-section {
+  margin-bottom: 2.5rem;
+}
+
+.property-row-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+.property-row-wrapper {
+  position: relative;
+}
+
+.property-row-scroll {
+  display: flex;
+  gap: 1.5rem;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.property-row-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.property-row-item {
+  flex: 0 0 calc((100% - 1.5rem) / 2);
+  scroll-snap-align: start;
+}
+
+.property-row-arrow {
+  position: absolute;
+  top: 40%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.property-row-arrow-left {
+  left: -16px;
+}
+
+.property-row-arrow-right {
+  right: -16px;
+}
