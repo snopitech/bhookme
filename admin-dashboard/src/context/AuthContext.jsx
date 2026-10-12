@@ -67,6 +67,8 @@ export function AuthProvider({ children }) {
     };
   }, [token]);
 
+  // Step 1: email + password. Never signs in by itself - returns what the
+  // next step is: 'code' (enter app code) or 'setup' (scan QR, then code).
   const login = async (email, password) => {
     try {
       const response = await fetch(`${API_BASE_URL}/admin-auth/login`, {
@@ -74,10 +76,42 @@ export function AuthProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        return { success: false, error: data.message || 'Invalid credentials' };
+      }
+      if (data.setupRequired) {
+        return {
+          success: true,
+          stage: 'setup',
+          challengeId: data.challengeId,
+          secret: data.secret,
+          otpauthUrl: data.otpauthUrl,
+          email: data.email,
+        };
+      }
+      if (data.totpRequired) {
+        return { success: true, stage: 'code', challengeId: data.challengeId, email: data.email };
+      }
+      return { success: false, error: 'Unexpected response from the server.' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Step 2: the 6-digit code. On success the admin is signed in.
+  const verifyCode = async (challengeId, code) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin-auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challengeId, code })
+      });
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok || !data.token) {
-        return { success: false, error: data.message || 'Invalid credentials' };
+        return { success: false, error: data.message || 'That code did not work.' };
       }
 
       const adminInfo = {
@@ -101,6 +135,7 @@ export function AuthProvider({ children }) {
     admin,
     token,
     login,
+    verifyCode,
     logout,
     loading,
     isHR: admin?.role === 'HR',

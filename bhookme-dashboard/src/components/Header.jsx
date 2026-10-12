@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { MapButton } from './MockMap';
+import { MapButton } from './MapPanel';
 import SearchBar from './SearchBar';
 
 const CATEGORIES = [
@@ -40,18 +40,12 @@ export default function Header() {
     };
   }, [menuOpen]);
 
-  // Close the menu whenever we navigate to a new route. React Router
-  // doesn't give us a per-Link close, so catching the pathname change
-  // here means every menu item click (and browser back/forward) closes it.
+  // Close the menu whenever we navigate to a new route.
   useEffect(() => {
     setMenuOpen(false);
   }, [location.pathname]);
 
   const handleLogout = () => {
-    // No redirect - stay on whatever page the user was viewing when
-    // they logged out. If that page happens to be a protected one
-    // (Tenant/Host dashboard), ProtectedRoute will redirect to /login
-    // on its own once `isAuthenticated` flips to false.
     logout();
     setMenuOpen(false);
   };
@@ -74,7 +68,9 @@ export default function Header() {
 
         <div className="flex items-center gap-3 shrink-0">
           {/* Host access needs a separate verification (password + code), so
-              this goes to the verify flow until the host session is active. */}
+              this goes to the verify flow until the host session is active.
+              Desktop only - mobile users get the same link in the category
+              row below instead. */}
           <Link
             to={hostVerified ? '/host/dashboard' : '/become-host'}
             className="hidden sm:block text-sm font-medium px-3 py-2 rounded-full hover:bg-gray-100"
@@ -174,14 +170,35 @@ export default function Header() {
             <Link
               key={cat.label}
               to={cat.path}
-              className={`text-sm font-medium whitespace-nowrap pb-1 border-b-2 transition ${
-                active ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-800'
+              className={`text-sm font-bold whitespace-nowrap pb-1 border-b-2 transition ${
+                active
+                  ? 'border-rose-500 text-rose-500'
+                  : 'border-transparent text-gray-500 hover:text-gray-900'
               }`}
             >
               {cat.label}
             </Link>
           );
         })}
+
+        {/* Mobile-only Host link, sits right after Services. Uses the
+            same 🏠 icon and dynamic label ("Host" / "Hosting") as the
+            bottom-nav host item, and the same destination logic:
+            verified hosts go straight to the dashboard, everyone else
+            goes through /become-host. The bottom-nav item is being
+            removed in a separate edit so this is the single mobile
+            entry point. */}
+        <Link
+          to={hostVerified ? '/host/dashboard' : '/become-host'}
+          className={`sm:hidden inline-flex items-center gap-1.5 text-sm font-bold whitespace-nowrap pb-1 border-b-2 transition ${
+            location.pathname.startsWith('/host/') || location.pathname === '/become-host'
+              ? 'border-rose-500 text-rose-500'
+              : 'border-transparent text-gray-500 hover:text-gray-900'
+          }`}
+        >
+          <span aria-hidden="true">🏠</span>
+          {hostVerified ? 'Hosting' : 'Host'}
+        </Link>
       </div>
     </header>
   );

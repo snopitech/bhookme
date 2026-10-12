@@ -1,0 +1,1389 @@
+===== BACKEND 
+===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\controller\CarBookingController.java 
+package bhookme_backend.controller;
+
+import bhookme_backend.dto.CarBookingCreateRequest;
+import bhookme_backend.dto.CarBookingResponse;
+import bhookme_backend.dto.CarQuoteResponse;
+import bhookme_backend.service.CarBookingService;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.LocalDate;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/car-bookings")
+public class CarBookingController {
+
+    private final CarBookingService carBookingService;
+
+    public CarBookingController(CarBookingService carBookingService) {
+        this.carBookingService = carBookingService;
+    }
+
+    @GetMapping("/quote")
+    public ResponseEntity<?> quote(
+            @RequestParam("carId") Long carId,
+            @RequestParam("startDate") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam("endDate") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
+        try {
+            CarQuoteResponse quote = carBookingService.getQuote(carId, startDate, endDate);
+            return ResponseEntity.ok(quote);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    @PostMapping
+    public ResponseEntity<?> create(Authentication authentication,
+                                     @RequestBody CarBookingCreateRequest request) {
+        try {
+            CarBookingResponse response = carBookingService.createBooking(authentication.getName(), request);
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    @GetMapping("/mine")
+    public ResponseEntity<List<CarBookingResponse>> mine(Authentication authentication) {
+        return ResponseEntity.ok(carBookingService.getMyBookings(authentication.getName()));
+    }
+
+    // Every car booking made on any car owned by this host. Powers the
+    // unified Bookings tab in the host dashboard (mixed with house
+    // bookings from GET /api/bookings/host).
+    @GetMapping("/host")
+    public ResponseEntity<List<CarBookingResponse>> host(Authentication authentication) {
+        return ResponseEntity.ok(carBookingService.getHostBookings(authentication.getName()));
+    }
+
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<?> cancel(Authentication authentication, @PathVariable("id") Long id) {
+        try {
+            CarBookingResponse response = carBookingService.cancelBooking(authentication.getName(), id);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    /**
+     * Host toggles the paid flag on a car booking. Body: { "paid": true }
+     * or { "paid": false }. When paid AND status is CONFIRMED, the
+     * booking blocks its dates (greyed/struck-through on the guest date
+     * picker). Toggling paid back to false releases the dates.
+     */
+    @PutMapping("/{id}/paid")
+    public ResponseEntity<?> setPaid(Authentication authentication,
+                                      @PathVariable("id") Long id,
+                                      @RequestBody Map<String, Object> body) {
+        try {
+            Boolean paid = body.get("paid") instanceof Boolean ? (Boolean) body.get("paid") : null;
+            if (paid == null) {
+                Map<String, String> err = new HashMap<>();
+                err.put("message", "Body must include a boolean 'paid' field.");
+                return ResponseEntity.badRequest().body(err);
+            }
+            CarBookingResponse response = carBookingService.setBookingPaid(authentication.getName(), id, paid);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    /**
+     * Host confirms a car booking. Only a PAID booking can be confirmed.
+     * Body: { "status": "CONFIRMED" } (default) or { "status": "PENDING" }
+     * to un-confirm.
+     */
+    @PutMapping("/{id}/confirm")
+    public ResponseEntity<?> confirm(Authentication authentication,
+                                      @PathVariable("id") Long id,
+                                      @RequestBody(required = false) Map<String, Object> body) {
+        try {
+            String status = body != null && body.get("status") != null
+                    ? body.get("status").toString()
+                    : "CONFIRMED";
+            CarBookingResponse response = carBookingService.setBookingConfirmed(authentication.getName(), id, status);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    /**
+     * Host declines a car booking. Body: { "reason": "Car already booked" }.
+     * Reason is optional but recommended - it goes into the guest's
+     * decline email. Sets the booking to CANCELLED.
+     */
+    @PutMapping("/{id}/decline")
+    public ResponseEntity<?> decline(Authentication authentication,
+                                      @PathVariable("id") Long id,
+                                      @RequestBody(required = false) Map<String, Object> body) {
+        try {
+            String reason = body != null && body.get("reason") != null
+                    ? body.get("reason").toString()
+                    : null;
+            CarBookingResponse response = carBookingService.declineBooking(authentication.getName(), id, reason);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    private ResponseEntity<?> error(RuntimeException e) {
+        Map<String, String> body = new HashMap<>();
+        body.put("message", e.getMessage());
+        return ResponseEntity.badRequest().body(body);
+    }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\controller\CarController.java 
+package bhookme_backend.controller;
+
+import bhookme_backend.dto.CarResponse;
+import bhookme_backend.service.CarBookingService;
+import bhookme_backend.service.CarService;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/cars")
+public class CarController {
+
+    private final CarService carService;
+    private final CarBookingService carBookingService;
+
+    public CarController(CarService carService, CarBookingService carBookingService) {
+        this.carService = carService;
+        this.carBookingService = carBookingService;
+    }
+
+    @GetMapping
+    public ResponseEntity<List<CarResponse>> getAll() {
+        return ResponseEntity.ok(carService.getActiveCars());
+    }
+
+    // The logged-in host's own cars (login required - see SecurityConfig).
+    @GetMapping("/mine")
+    public ResponseEntity<?> mine(Authentication authentication) {
+        try {
+            return ResponseEntity.ok(carService.getMyCars(authentication == null ? null : authentication.getName()));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<?> getOne(@PathVariable("id") Long id) {
+        try {
+            return ResponseEntity.ok(carService.getCarById(id));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    // Public: returns every paid+confirmed booking's date range for
+    // this car, so the guest date picker can strike those dates out.
+    // Shape: [{"startDate": "2026-10-12", "endDate": "2026-10-15"}, ...]
+    @GetMapping("/{id}/blocked-dates")
+    public ResponseEntity<?> blockedDates(@PathVariable("id") Long id) {
+        try {
+            return ResponseEntity.ok(carBookingService.getBlockedDates(id));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    // Create a car listing:
+    //   {"make","model","year","category","city","state","dailyRate","imageUrls":[...]}
+    @PostMapping
+    public ResponseEntity<?> create(Authentication authentication, @RequestBody Map<String, Object> body) {
+        try {
+            return ResponseEntity.status(HttpStatus.CREATED).body(carService.createCar(authentication.getName(), body));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    // Pause or reactivate: {"status": "INACTIVE"} or {"status": "ACTIVE"}
+    @PutMapping("/{id}/status")
+    public ResponseEntity<?> setStatus(Authentication authentication, @PathVariable("id") Long id,
+                                       @RequestBody Map<String, String> body) {
+        try {
+            return ResponseEntity.ok(carService.setStatus(authentication.getName(), id, body.get("status")));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    private ResponseEntity<?> error(RuntimeException e) {
+        Map<String, String> body = new HashMap<>();
+        body.put("message", e.getMessage());
+        return ResponseEntity.badRequest().body(body);
+    }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\controller\CarWishlistController.java 
+package bhookme_backend.controller;
+
+import bhookme_backend.dto.CarResponse;
+import bhookme_backend.model.User;
+import bhookme_backend.repository.UserRepository;
+import bhookme_backend.service.CarService;
+import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+// Saved cars, alongside the existing home wishlist (/api/wishlist).
+//   GET    /api/wishlist/cars/ids        -> [3, 7, ...]
+//   GET    /api/wishlist/cars            -> full car details, newest saved first
+//   POST   /api/wishlist/cars/{carId}    -> save
+//   DELETE /api/wishlist/cars/{carId}    -> remove
+// Login required (covered by SecurityConfig's anyRequest().authenticated()).
+@RestController
+@RequestMapping("/api/wishlist/cars")
+public class CarWishlistController {
+
+    private final JdbcTemplate jdbc;
+    private final UserRepository userRepository;
+    private final CarService carService;
+
+    public CarWishlistController(JdbcTemplate jdbc, UserRepository userRepository, CarService carService) {
+        this.jdbc = jdbc;
+        this.userRepository = userRepository;
+        this.carService = carService;
+    }
+
+    @GetMapping("/ids")
+    public ResponseEntity<?> ids(Authentication authentication) {
+        try {
+            Long userId = userId(authentication);
+            return ResponseEntity.ok(jdbc.queryForList(
+                    "SELECT car_id FROM car_wishlist WHERE user_id = ? ORDER BY created_at DESC", Long.class, userId));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    @GetMapping
+    public ResponseEntity<?> list(Authentication authentication) {
+        try {
+            Long userId = userId(authentication);
+            List<Long> ids = jdbc.queryForList(
+                    "SELECT car_id FROM car_wishlist WHERE user_id = ? ORDER BY created_at DESC", Long.class, userId);
+            List<CarResponse> cars = new ArrayList<>();
+            for (Long id : ids) {
+                try {
+                    cars.add(carService.getCarById(id));
+                } catch (RuntimeException ignored) {
+                    // car was removed - skip it
+                }
+            }
+            return ResponseEntity.ok(cars);
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    @PostMapping("/{carId}")
+    public ResponseEntity<?> add(Authentication authentication, @PathVariable("carId") Long carId) {
+        try {
+            Long userId = userId(authentication);
+            Integer exists = jdbc.queryForObject("SELECT COUNT(*) FROM car_rentals WHERE id = ?", Integer.class, carId);
+            if (exists == null || exists == 0) throw new RuntimeException("Car not found");
+            // Saving the same car twice is a no-op, not an error.
+            jdbc.update("INSERT IGNORE INTO car_wishlist (user_id, car_id) VALUES (?, ?)", userId, carId);
+            return ResponseEntity.ok().build();
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    @DeleteMapping("/{carId}")
+    public ResponseEntity<?> remove(Authentication authentication, @PathVariable("carId") Long carId) {
+        try {
+            Long userId = userId(authentication);
+            jdbc.update("DELETE FROM car_wishlist WHERE user_id = ? AND car_id = ?", userId, carId);
+            return ResponseEntity.ok().build();
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    private Long userId(Authentication authentication) {
+        if (authentication == null || authentication.getName() == null) throw new RuntimeException("Please log in.");
+        User user = userRepository.findByEmail(authentication.getName())
+                .orElseThrow(() -> new RuntimeException("Account not found"));
+        return user.getId();
+    }
+
+    private ResponseEntity<?> error(RuntimeException e) {
+        Map<String, String> body = new HashMap<>();
+        body.put("message", e.getMessage());
+        return ResponseEntity.badRequest().body(body);
+    }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\dto\CarBookingCreateRequest.java 
+package bhookme_backend.dto;
+
+import java.time.LocalDate;
+
+public class CarBookingCreateRequest {
+    private Long carId;
+    private LocalDate startDate;
+    private LocalDate endDate;
+
+    public Long getCarId() { return carId; }
+    public void setCarId(Long carId) { this.carId = carId; }
+
+    public LocalDate getStartDate() { return startDate; }
+    public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
+
+    public LocalDate getEndDate() { return endDate; }
+    public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\dto\CarBookingResponse.java 
+package bhookme_backend.dto;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+public class CarBookingResponse {
+    private Long id;
+    private Long carId;
+    private Long hostId;
+    private String make;
+    private String model;
+    private String imageUrl;
+    private Long guestUserId;
+    private String guestFirstName;
+    private String guestLastName;
+    private LocalDate startDate;
+    private LocalDate endDate;
+    private BigDecimal dailyRate;
+    private Integer totalDays;
+    private BigDecimal totalPrice;
+    private String status;
+    private Boolean paid;
+    private LocalDateTime createdAt;
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public Long getCarId() { return carId; }
+    public void setCarId(Long carId) { this.carId = carId; }
+
+    public Long getHostId() { return hostId; }
+    public void setHostId(Long hostId) { this.hostId = hostId; }
+
+    public String getMake() { return make; }
+    public void setMake(String make) { this.make = make; }
+
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
+
+    public String getImageUrl() { return imageUrl; }
+    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+
+    public Long getGuestUserId() { return guestUserId; }
+    public void setGuestUserId(Long guestUserId) { this.guestUserId = guestUserId; }
+
+    public String getGuestFirstName() { return guestFirstName; }
+    public void setGuestFirstName(String guestFirstName) { this.guestFirstName = guestFirstName; }
+
+    public String getGuestLastName() { return guestLastName; }
+    public void setGuestLastName(String guestLastName) { this.guestLastName = guestLastName; }
+
+    public LocalDate getStartDate() { return startDate; }
+    public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
+
+    public LocalDate getEndDate() { return endDate; }
+    public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
+
+    public BigDecimal getDailyRate() { return dailyRate; }
+    public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+
+    public Integer getTotalDays() { return totalDays; }
+    public void setTotalDays(Integer totalDays) { this.totalDays = totalDays; }
+
+    public BigDecimal getTotalPrice() { return totalPrice; }
+    public void setTotalPrice(BigDecimal totalPrice) { this.totalPrice = totalPrice; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+
+    public Boolean getPaid() { return paid; }
+    public void setPaid(Boolean paid) { this.paid = paid; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\dto\CarQuoteResponse.java 
+package bhookme_backend.dto;
+
+import java.math.BigDecimal;
+
+public class CarQuoteResponse {
+    private Boolean available;
+    private String message;
+    private Integer totalDays;
+    private BigDecimal dailyRate;
+    private BigDecimal totalPrice;
+
+    public Boolean getAvailable() { return available; }
+    public void setAvailable(Boolean available) { this.available = available; }
+
+    public String getMessage() { return message; }
+    public void setMessage(String message) { this.message = message; }
+
+    public Integer getTotalDays() { return totalDays; }
+    public void setTotalDays(Integer totalDays) { this.totalDays = totalDays; }
+
+    public BigDecimal getDailyRate() { return dailyRate; }
+    public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+
+    public BigDecimal getTotalPrice() { return totalPrice; }
+    public void setTotalPrice(BigDecimal totalPrice) { this.totalPrice = totalPrice; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\dto\CarResponse.java 
+package bhookme_backend.dto;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+public class CarResponse {
+    private Long id;
+    private Long hostId;
+    private String hostFirstName;
+    private String hostLastName;
+    private String make;
+    private String model;
+    private Integer year;
+    private String category;
+    private String city;
+    private String state;
+    private BigDecimal dailyRate;
+    private String imageUrl;
+    private List<String> imageUrls;
+    private String status;
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public Long getHostId() { return hostId; }
+    public void setHostId(Long hostId) { this.hostId = hostId; }
+
+    public String getHostFirstName() { return hostFirstName; }
+    public void setHostFirstName(String hostFirstName) { this.hostFirstName = hostFirstName; }
+
+    public String getHostLastName() { return hostLastName; }
+    public void setHostLastName(String hostLastName) { this.hostLastName = hostLastName; }
+
+    public String getMake() { return make; }
+    public void setMake(String make) { this.make = make; }
+
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
+
+    public Integer getYear() { return year; }
+    public void setYear(Integer year) { this.year = year; }
+
+    public String getCategory() { return category; }
+    public void setCategory(String category) { this.category = category; }
+
+    public String getCity() { return city; }
+    public void setCity(String city) { this.city = city; }
+
+    public String getState() { return state; }
+    public void setState(String state) { this.state = state; }
+
+    public BigDecimal getDailyRate() { return dailyRate; }
+    public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+
+    public String getImageUrl() { return imageUrl; }
+    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+
+    public List<String> getImageUrls() { return imageUrls; }
+    public void setImageUrls(List<String> imageUrls) { this.imageUrls = imageUrls; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\model\Car.java 
+package bhookme_backend.model;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "car_rentals")
+public class Car {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "host_user_id", nullable = false)
+    private User host;
+
+    @Column(nullable = false)
+    private String make;
+
+    @Column(nullable = false)
+    private String model;
+
+    @Column(nullable = false)
+    private Integer year;
+
+    @Column(nullable = false)
+    private String category;
+
+    @Column(nullable = false)
+    private String city;
+
+    @Column(nullable = false)
+    private String state;
+
+    @Column(name = "daily_rate", nullable = false)
+    private BigDecimal dailyRate;
+
+    @Column(name = "image_url", length = 500)
+    private String imageUrl;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private CarStatus status = CarStatus.ACTIVE;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    protected void onCreate() {
+        createdAt = LocalDateTime.now();
+    }
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public User getHost() { return host; }
+    public void setHost(User host) { this.host = host; }
+
+    public String getMake() { return make; }
+    public void setMake(String make) { this.make = make; }
+
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
+
+    public Integer getYear() { return year; }
+    public void setYear(Integer year) { this.year = year; }
+
+    public String getCategory() { return category; }
+    public void setCategory(String category) { this.category = category; }
+
+    public String getCity() { return city; }
+    public void setCity(String city) { this.city = city; }
+
+    public String getState() { return state; }
+    public void setState(String state) { this.state = state; }
+
+    public BigDecimal getDailyRate() { return dailyRate; }
+    public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+
+    public String getImageUrl() { return imageUrl; }
+    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+
+    public CarStatus getStatus() { return status; }
+    public void setStatus(CarStatus status) { this.status = status; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\model\CarBooking.java 
+package bhookme_backend.model;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "car_bookings")
+public class CarBooking {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "car_id", nullable = false)
+    private Car car;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "guest_user_id", nullable = false)
+    private User guest;
+
+    @Column(name = "start_date", nullable = false)
+    private LocalDate startDate;
+
+    @Column(name = "end_date", nullable = false)
+    private LocalDate endDate;
+
+    @Column(name = "daily_rate_snapshot", nullable = false)
+    private BigDecimal dailyRateSnapshot;
+
+    @Column(name = "total_days", nullable = false)
+    private Integer totalDays;
+
+    @Column(name = "total_price", nullable = false)
+    private BigDecimal totalPrice;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private BookingStatus status = BookingStatus.PENDING;
+
+    // Host marks this true (for now, manually; later, Stripe's webhook
+    // will set it) when the booking has been paid. Only a paid AND
+    // confirmed booking blocks its dates. Hosts can toggle this back
+    // to false to release the dates and remove the strike-through on
+    // the guest date picker.
+    @Column(name = "paid", nullable = false)
+    private Boolean paid = false;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    public CarBooking() {}
+
+    @PrePersist
+    protected void onCreate() {
+        createdAt = LocalDateTime.now();
+        updatedAt = LocalDateTime.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public Car getCar() { return car; }
+    public void setCar(Car car) { this.car = car; }
+
+    public User getGuest() { return guest; }
+    public void setGuest(User guest) { this.guest = guest; }
+
+    public LocalDate getStartDate() { return startDate; }
+    public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
+
+    public LocalDate getEndDate() { return endDate; }
+    public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
+
+    public BigDecimal getDailyRateSnapshot() { return dailyRateSnapshot; }
+    public void setDailyRateSnapshot(BigDecimal dailyRateSnapshot) { this.dailyRateSnapshot = dailyRateSnapshot; }
+
+    public Integer getTotalDays() { return totalDays; }
+    public void setTotalDays(Integer totalDays) { this.totalDays = totalDays; }
+
+    public BigDecimal getTotalPrice() { return totalPrice; }
+    public void setTotalPrice(BigDecimal totalPrice) { this.totalPrice = totalPrice; }
+
+    public BookingStatus getStatus() { return status; }
+    public void setStatus(BookingStatus status) { this.status = status; }
+
+    public Boolean getPaid() { return paid; }
+    public void setPaid(Boolean paid) { this.paid = paid; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\model\CarStatus.java 
+package bhookme_backend.model;
+
+public enum CarStatus {
+    ACTIVE,
+    INACTIVE
+}
+===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\repository\CarBookingRepository.java 
+package bhookme_backend.repository;
+
+import bhookme_backend.model.BookingStatus;
+import bhookme_backend.model.CarBooking;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.time.LocalDate;
+import java.util.List;
+
+public interface CarBookingRepository extends JpaRepository<CarBooking, Long> {
+
+    List<CarBooking> findByGuestId(Long guestId);
+
+    // Every car booking made on any car owned by this host - powers
+    // the host dashboard's unified Bookings tab.
+    List<CarBooking> findByCar_Host_Id(Long hostId);
+
+    // ============================================================
+    // AVAILABILITY CHECK (v1 - status-based)
+    // ------------------------------------------------------------
+    // Returns any booking on this car with the given status that
+    // overlaps the requested range. Kept for reference / other uses.
+    // ============================================================
+    @Query("SELECT cb FROM CarBooking cb " +
+           "WHERE cb.car.id = :carId " +
+           "AND cb.status = :status " +
+           "AND cb.startDate < :endDate " +
+           "AND cb.endDate > :startDate")
+    List<CarBooking> findOverlappingBookings(@Param("carId") Long carId,
+                                              @Param("startDate") LocalDate startDate,
+                                              @Param("endDate") LocalDate endDate,
+                                              @Param("status") BookingStatus status);
+
+    // ============================================================
+    // BLOCKING BOOKINGS (v2 rule: paid + confirmed)
+    // ------------------------------------------------------------
+    // Same overlap logic as findOverlappingBookings, but filtered to
+    // paid+confirmed bookings only. PENDING or unpaid bookings block
+    // nothing, so multiple guests can request the same dates.
+    // ============================================================
+    @Query("SELECT cb FROM CarBooking cb " +
+           "WHERE cb.car.id = :carId " +
+           "AND cb.paid = true " +
+           "AND cb.status = bhookme_backend.model.BookingStatus.CONFIRMED " +
+           "AND cb.startDate < :endDate " +
+           "AND cb.endDate > :startDate")
+    List<CarBooking> findBlockingBookings(@Param("carId") Long carId,
+                                           @Param("startDate") LocalDate startDate,
+                                           @Param("endDate") LocalDate endDate);
+
+    // ============================================================
+    // ALL BLOCKING BOOKINGS for a car (no date window)
+    // ------------------------------------------------------------
+    // Used by GET /api/cars/{id}/blocked-dates to feed the guest
+    // date picker. Returns every paid+confirmed booking for the car,
+    // so the picker can strike through all of them at once.
+    // ============================================================
+    @Query("SELECT cb FROM CarBooking cb " +
+           "WHERE cb.car.id = :carId " +
+           "AND cb.paid = true " +
+           "AND cb.status = bhookme_backend.model.BookingStatus.CONFIRMED")
+    List<CarBooking> findAllBlockingForCar(@Param("carId") Long carId);
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\repository\CarRepository.java 
+package bhookme_backend.repository;
+
+import bhookme_backend.model.Car;
+import bhookme_backend.model.CarStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+
+public interface CarRepository extends JpaRepository<Car, Long> {
+    List<Car> findByStatus(CarStatus status);
+    List<Car> findByHost_Id(Long hostId);
+}
+===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\service\CarBookingService.java 
+package bhookme_backend.service;
+
+import bhookme_backend.dto.CarBookingCreateRequest;
+import bhookme_backend.dto.CarBookingResponse;
+import bhookme_backend.dto.CarQuoteResponse;
+import bhookme_backend.model.BookingStatus;
+import bhookme_backend.model.Car;
+import bhookme_backend.model.CarBooking;
+import bhookme_backend.model.CarStatus;
+import bhookme_backend.model.User;
+import bhookme_backend.repository.CarBookingRepository;
+import bhookme_backend.repository.CarRepository;
+import bhookme_backend.repository.UserRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Service
+public class CarBookingService {
+
+    private static final int MAX_DAYS = 30;
+
+    private final CarBookingRepository carBookingRepository;
+    private final CarRepository carRepository;
+    private final UserRepository userRepository;
+    private final EmailService emailService;
+
+    public CarBookingService(CarBookingRepository carBookingRepository,
+                              CarRepository carRepository,
+                              UserRepository userRepository,
+                              EmailService emailService) {
+        this.carBookingRepository = carBookingRepository;
+        this.carRepository = carRepository;
+        this.userRepository = userRepository;
+        this.emailService = emailService;
+    }
+
+    @Transactional(readOnly = true)
+    public CarQuoteResponse getQuote(Long carId, LocalDate startDate, LocalDate endDate) {
+        Car car = findCar(carId);
+        CarQuoteResponse quote = new CarQuoteResponse();
+
+        String problem = validateStay(car, startDate, endDate);
+        if (problem != null) {
+            quote.setAvailable(false);
+            quote.setMessage(problem);
+            return quote;
+        }
+
+        int days = (int) ChronoUnit.DAYS.between(startDate, endDate);
+        BigDecimal total = car.getDailyRate().multiply(BigDecimal.valueOf(days)).setScale(2, RoundingMode.HALF_UP);
+
+        quote.setAvailable(true);
+        quote.setTotalDays(days);
+        quote.setDailyRate(car.getDailyRate());
+        quote.setTotalPrice(total);
+        return quote;
+    }
+
+    @Transactional
+    public CarBookingResponse createBooking(String email, CarBookingCreateRequest request) {
+        User guest = findUser(email);
+
+        if (request.getCarId() == null) {
+            throw new RuntimeException("Car is required");
+        }
+        Car car = findCar(request.getCarId());
+
+        if (guest.getDateOfBirth() == null) {
+            throw new RuntimeException("Please complete your profile (date of birth) before booking");
+        }
+        if (car.getHost().getId().equals(guest.getId())) {
+            throw new RuntimeException("You cannot rent your own car listing");
+        }
+
+        String problem = validateStay(car, request.getStartDate(), request.getEndDate());
+        if (problem != null) {
+            throw new RuntimeException(problem);
+        }
+
+        int days = (int) ChronoUnit.DAYS.between(request.getStartDate(), request.getEndDate());
+        BigDecimal total = car.getDailyRate().multiply(BigDecimal.valueOf(days)).setScale(2, RoundingMode.HALF_UP);
+
+        CarBooking booking = new CarBooking();
+        booking.setCar(car);
+        booking.setGuest(guest);
+        booking.setStartDate(request.getStartDate());
+        booking.setEndDate(request.getEndDate());
+        booking.setDailyRateSnapshot(car.getDailyRate());
+        booking.setTotalDays(days);
+        booking.setTotalPrice(total);
+        booking.setStatus(BookingStatus.PENDING);
+        booking.setPaid(false);
+
+        return toResponse(carBookingRepository.save(booking));
+    }
+
+    @Transactional(readOnly = true)
+    public List<CarBookingResponse> getMyBookings(String email) {
+        User guest = findUser(email);
+        return carBookingRepository.findByGuestId(guest.getId()).stream()
+                .sorted(Comparator.comparing(CarBooking::getStartDate).reversed())
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<CarBookingResponse> getHostBookings(String hostEmail) {
+        User host = findUser(hostEmail);
+        return carBookingRepository.findByCar_Host_Id(host.getId()).stream()
+                .sorted(Comparator.comparing(CarBooking::getCreatedAt).reversed())
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, String>> getBlockedDates(Long carId) {
+        findCar(carId);
+        return carBookingRepository.findAllBlockingForCar(carId).stream()
+                .map(b -> {
+                    Map<String, String> m = new HashMap<>();
+                    m.put("startDate", b.getStartDate().toString());
+                    m.put("endDate", b.getEndDate().toString());
+                    return m;
+                })
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public CarBookingResponse cancelBooking(String email, Long bookingId) {
+        User guest = findUser(email);
+        CarBooking booking = carBookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        if (!booking.getGuest().getId().equals(guest.getId())) {
+            throw new RuntimeException("You can only cancel your own bookings");
+        }
+        if (booking.getStatus() == BookingStatus.CANCELLED) {
+            return toResponse(booking);
+        }
+        if (booking.getStatus() == BookingStatus.COMPLETED
+                || booking.getStartDate().isBefore(LocalDate.now())) {
+            throw new RuntimeException("This booking can no longer be cancelled");
+        }
+
+        booking.setStatus(BookingStatus.CANCELLED);
+        return toResponse(carBookingRepository.save(booking));
+    }
+
+    // ------------------------------------------------------------
+    // Host actions: mark paid, confirm, decline
+    // ------------------------------------------------------------
+
+    @Transactional
+    public CarBookingResponse setBookingPaid(String hostEmail, Long bookingId, boolean paid) {
+        User host = findUser(hostEmail);
+        CarBooking booking = carBookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        if (!booking.getCar().getHost().getId().equals(host.getId())) {
+            throw new RuntimeException("You can only manage bookings on your own listings");
+        }
+        if (booking.getStatus() == BookingStatus.CANCELLED) {
+            throw new RuntimeException("This booking was cancelled and can't be marked paid");
+        }
+        if (booking.getStatus() == BookingStatus.COMPLETED) {
+            throw new RuntimeException("This booking is already completed");
+        }
+
+        boolean wasPaid = Boolean.TRUE.equals(booking.getPaid());
+        booking.setPaid(paid);
+        CarBooking saved = carBookingRepository.save(booking);
+
+        if (!wasPaid && paid) {
+            try {
+                emailService.sendBookingPaidEmail(
+                        booking.getGuest().getEmail(),
+                        booking.getGuest().getFirstName(),
+                        carLabel(booking.getCar()),
+                        booking.getStartDate(),
+                        booking.getEndDate(),
+                        booking.getTotalPrice()
+                );
+            } catch (Exception e) {
+                System.err.println("[CarBooking] Failed to send paid email to "
+                        + booking.getGuest().getEmail() + ": " + e.getMessage());
+            }
+        }
+
+        return toResponse(saved);
+    }
+
+    @Transactional
+    public CarBookingResponse setBookingConfirmed(String hostEmail, Long bookingId, String targetStatus) {
+        User host = findUser(hostEmail);
+        CarBooking booking = carBookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        if (!booking.getCar().getHost().getId().equals(host.getId())) {
+            throw new RuntimeException("You can only manage bookings on your own listings");
+        }
+        if (booking.getStatus() == BookingStatus.CANCELLED) {
+            throw new RuntimeException("This booking was cancelled and can't be re-confirmed");
+        }
+        if (booking.getStatus() == BookingStatus.COMPLETED) {
+            throw new RuntimeException("This booking is already completed");
+        }
+
+        BookingStatus previous = booking.getStatus();
+
+        if ("CONFIRMED".equalsIgnoreCase(targetStatus)) {
+            if (!Boolean.TRUE.equals(booking.getPaid())) {
+                throw new RuntimeException("Mark the booking as paid before confirming it");
+            }
+            booking.setStatus(BookingStatus.CONFIRMED);
+        } else if ("PENDING".equalsIgnoreCase(targetStatus)) {
+            booking.setStatus(BookingStatus.PENDING);
+        } else {
+            throw new RuntimeException("Status must be CONFIRMED or PENDING");
+        }
+
+        CarBooking saved = carBookingRepository.save(booking);
+
+        if (previous != BookingStatus.CONFIRMED && booking.getStatus() == BookingStatus.CONFIRMED) {
+            try {
+                emailService.sendBookingConfirmedEmail(
+                        booking.getGuest().getEmail(),
+                        booking.getGuest().getFirstName(),
+                        carLabel(booking.getCar()),
+                        booking.getStartDate(),
+                        booking.getEndDate(),
+                        booking.getTotalPrice()
+                );
+            } catch (Exception e) {
+                System.err.println("[CarBooking] Failed to send confirmed email to "
+                        + booking.getGuest().getEmail() + ": " + e.getMessage());
+            }
+        }
+
+        return toResponse(saved);
+    }
+
+    @Transactional
+    public CarBookingResponse declineBooking(String hostEmail, Long bookingId, String reason) {
+        User host = findUser(hostEmail);
+        CarBooking booking = carBookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        if (!booking.getCar().getHost().getId().equals(host.getId())) {
+            throw new RuntimeException("You can only manage bookings on your own listings");
+        }
+        if (booking.getStatus() == BookingStatus.CANCELLED) {
+            return toResponse(booking);
+        }
+        if (booking.getStatus() == BookingStatus.COMPLETED) {
+            throw new RuntimeException("This booking is already completed");
+        }
+
+        boolean wasPaid = Boolean.TRUE.equals(booking.getPaid());
+        booking.setStatus(BookingStatus.CANCELLED);
+        CarBooking saved = carBookingRepository.save(booking);
+
+        try {
+            emailService.sendBookingDeclinedEmail(
+                    booking.getGuest().getEmail(),
+                    booking.getGuest().getFirstName(),
+                    carLabel(booking.getCar()),
+                    booking.getStartDate(),
+                    booking.getEndDate(),
+                    booking.getTotalPrice(),
+                    wasPaid,
+                    reason
+            );
+        } catch (Exception e) {
+            System.err.println("[CarBooking] Failed to send declined email to "
+                    + booking.getGuest().getEmail() + ": " + e.getMessage());
+        }
+
+        return toResponse(saved);
+    }
+
+    // ------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------
+
+    private String carLabel(Car car) {
+        StringBuilder sb = new StringBuilder();
+        if (car.getYear() != null) sb.append(car.getYear()).append(' ');
+        if (car.getMake() != null) sb.append(car.getMake());
+        if (car.getModel() != null) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(car.getModel());
+        }
+        return sb.length() > 0 ? sb.toString() : "your car";
+    }
+
+    private String validateStay(Car car, LocalDate startDate, LocalDate endDate) {
+        if (car.getStatus() != CarStatus.ACTIVE) {
+            return "This car is not available for rent";
+        }
+        if (startDate == null || endDate == null) {
+            return "Choose pickup and return dates";
+        }
+        if (startDate.isBefore(LocalDate.now())) {
+            return "Pickup date cannot be in the past";
+        }
+        if (!endDate.isAfter(startDate)) {
+            return "Return date must be after pickup";
+        }
+        if (ChronoUnit.DAYS.between(startDate, endDate) > MAX_DAYS) {
+            return "Rentals are limited to " + MAX_DAYS + " days";
+        }
+        if (!carBookingRepository.findBlockingBookings(car.getId(), startDate, endDate).isEmpty()) {
+            return "This car is already booked for those dates";
+        }
+        return null;
+    }
+
+    private Car findCar(Long id) {
+        return carRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Car not found"));
+    }
+
+    private User findUser(String email) {
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Account not found"));
+    }
+
+    private CarBookingResponse toResponse(CarBooking booking) {
+        Car car = booking.getCar();
+        User guest = booking.getGuest();
+
+        CarBookingResponse response = new CarBookingResponse();
+        response.setId(booking.getId());
+        response.setCarId(car.getId());
+        response.setHostId(car.getHost().getId());
+        response.setMake(car.getMake());
+        response.setModel(car.getModel());
+        response.setImageUrl(car.getImageUrl());
+        response.setGuestUserId(guest.getId());
+        response.setGuestFirstName(guest.getFirstName());
+        response.setGuestLastName(guest.getLastName());
+        response.setStartDate(booking.getStartDate());
+        response.setEndDate(booking.getEndDate());
+        response.setDailyRate(booking.getDailyRateSnapshot());
+        response.setTotalDays(booking.getTotalDays());
+        response.setTotalPrice(booking.getTotalPrice());
+        response.setStatus(booking.getStatus().name());
+        response.setPaid(Boolean.TRUE.equals(booking.getPaid()));
+        response.setCreatedAt(booking.getCreatedAt());
+        return response;
+    }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\service\CarService.java 
+package bhookme_backend.service;
+
+import bhookme_backend.dto.CarResponse;
+import bhookme_backend.model.Car;
+import bhookme_backend.model.CarStatus;
+import bhookme_backend.model.User;
+import bhookme_backend.repository.CarRepository;
+import bhookme_backend.repository.UserRepository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.Year;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Service
+public class CarService {
+
+    public static final int MAX_PHOTOS_PER_CAR = 30;
+
+    private final CarRepository carRepository;
+    private final UserRepository userRepository;
+    private final R2StorageService r2StorageService;
+    private final JdbcTemplate jdbc;
+
+    public CarService(CarRepository carRepository, UserRepository userRepository,
+                      R2StorageService r2StorageService, JdbcTemplate jdbc) {
+        this.carRepository = carRepository;
+        this.userRepository = userRepository;
+        this.r2StorageService = r2StorageService;
+        this.jdbc = jdbc;
+    }
+
+    @Transactional(readOnly = true)
+    public List<CarResponse> getActiveCars() {
+        return carRepository.findByStatus(CarStatus.ACTIVE).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public CarResponse getCarById(Long id) {
+        Car car = carRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Car not found"));
+        return toResponse(car);
+    }
+
+    // The logged-in host's own cars, newest first - Host Dashboard Car Rental tab.
+    @Transactional(readOnly = true)
+    public List<CarResponse> getMyCars(String hostEmail) {
+        User host = findUser(hostEmail);
+        return carRepository.findByHost_Id(host.getId()).stream()
+                .sorted(Comparator.comparing(Car::getId).reversed())
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+    }
+
+    // Create a car listing with its photos (already uploaded via /api/upload/image).
+    // The first photo is the cover and is also stored in car_rentals.image_url.
+    @Transactional
+    public CarResponse createCar(String hostEmail, Map<String, Object> body) {
+        User host = findUser(hostEmail);
+
+        String make = text(body.get("make"));
+        String model = text(body.get("model"));
+        String category = text(body.get("category"));
+        String city = text(body.get("city"));
+        String state = text(body.get("state"));
+        Integer year = intOrNull(body.get("year"));
+        BigDecimal dailyRate = decimalOrNull(body.get("dailyRate"));
+
+        if (make == null) throw new RuntimeException("Enter the car's make (e.g. Toyota).");
+        if (model == null) throw new RuntimeException("Enter the car's model (e.g. Camry).");
+        int maxYear = Year.now().getValue() + 1;
+        if (year == null || year < 1980 || year > maxYear) {
+            throw new RuntimeException("Year must be between 1980 and " + maxYear + ".");
+        }
+        if (category == null) throw new RuntimeException("Pick a category.");
+        if (city == null) throw new RuntimeException("Enter the city where the car is picked up.");
+        if (state == null) throw new RuntimeException("Enter the state.");
+        if (dailyRate == null || dailyRate.compareTo(BigDecimal.ONE) < 0) {
+            throw new RuntimeException("Daily price must be at least $1.");
+        }
+
+        List<String> photos = photoList(body.get("imageUrls"));
+        if (photos.isEmpty()) throw new RuntimeException("Add at least one photo of the car.");
+
+        Car car = new Car();
+        car.setHost(host);
+        car.setMake(make);
+        car.setModel(model);
+        car.setYear(year);
+        car.setCategory(category);
+        car.setCity(city);
+        car.setState(state);
+        car.setDailyRate(dailyRate);
+        car.setImageUrl(photos.get(0));
+        car.setStatus(CarStatus.ACTIVE);
+        Car saved = carRepository.save(car);
+
+        for (int i = 0; i < photos.size(); i++) {
+            jdbc.update("INSERT INTO car_rental_images (car_id, image_url, display_order) VALUES (?, ?, ?)",
+                    saved.getId(), photos.get(i), i);
+        }
+
+        if (!Boolean.TRUE.equals(host.getIsHost())) {
+            host.setIsHost(true);
+            userRepository.save(host);
+        }
+
+        return toResponse(saved);
+    }
+
+    // Pause (INACTIVE) or reactivate (ACTIVE) one of the host's own cars.
+    @Transactional
+    public CarResponse setStatus(String hostEmail, Long carId, String status) {
+        User host = findUser(hostEmail);
+        Car car = carRepository.findById(carId)
+                .orElseThrow(() -> new RuntimeException("Car not found"));
+        if (!car.getHost().getId().equals(host.getId())) {
+            throw new RuntimeException("You can only change your own cars.");
+        }
+        CarStatus newStatus;
+        try {
+            newStatus = CarStatus.valueOf(String.valueOf(status).trim().toUpperCase());
+        } catch (Exception e) {
+            throw new RuntimeException("Status must be ACTIVE or INACTIVE.");
+        }
+        car.setStatus(newStatus);
+        return toResponse(carRepository.save(car));
+    }
+
+    // ---------- helpers ----------
+
+    private List<String> photoList(Object raw) {
+        List<String> urls = new ArrayList<>();
+        if (!(raw instanceof List)) return urls;
+        for (Object o : (List<?>) raw) {
+            String u = text(o);
+            if (u == null) continue;
+            if (!r2StorageService.isOwnUrl(u)) {
+                throw new RuntimeException("Photos must be uploaded through bhookme.");
+            }
+            if (!urls.contains(u)) urls.add(u);
+        }
+        if (urls.size() > MAX_PHOTOS_PER_CAR) {
+            throw new RuntimeException("A car can have up to " + MAX_PHOTOS_PER_CAR + " photos.");
+        }
+        return urls;
+    }
+
+    private List<String> photosOf(Car car) {
+        List<String> urls = jdbc.queryForList(
+                "SELECT image_url FROM car_rental_images WHERE car_id = ? ORDER BY display_order, id",
+                String.class, car.getId());
+        if (urls.isEmpty() && car.getImageUrl() != null) {
+            urls = new ArrayList<>(List.of(car.getImageUrl())); // older cars: single photo only
+        }
+        return urls;
+    }
+
+    private User findUser(String email) {
+        if (email == null) throw new RuntimeException("Please log in.");
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Account not found"));
+    }
+
+    private String text(Object value) {
+        if (value == null) return null;
+        String s = value.toString().trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private Integer intOrNull(Object value) {
+        String s = text(value);
+        if (s == null) return null;
+        try { return new BigDecimal(s).intValueExact(); } catch (Exception e) { return null; }
+    }
+
+    private BigDecimal decimalOrNull(Object value) {
+        String s = text(value);
+        if (s == null) return null;
+        try { return new BigDecimal(s); } catch (Exception e) { return null; }
+    }
+
+    private CarResponse toResponse(Car car) {
+        CarResponse response = new CarResponse();
+        response.setId(car.getId());
+        response.setHostId(car.getHost().getId());
+        response.setHostFirstName(car.getHost().getFirstName());
+        response.setHostLastName(car.getHost().getLastName());
+        response.setMake(car.getMake());
+        response.setModel(car.getModel());
+        response.setYear(car.getYear());
+        response.setCategory(car.getCategory());
+        response.setCity(car.getCity());
+        response.setState(car.getState());
+        response.setDailyRate(car.getDailyRate());
+        response.setImageUrl(car.getImageUrl());
+        response.setImageUrls(photosOf(car));
+        response.setStatus(car.getStatus().name());
+        return response;
+    }
+}===== FRONTEND FILES THAT POST CARS 
+bhookme-dashboard\src\components\CarRentalRow.jsx:17:    fetch(`${API_BASE_URL}/cars`)
+bhookme-dashboard\src\components\CarReserveCard.jsx:40:    fetch(`${API_BASE_URL}/cars/${car.id}/blocked-dates`)
+bhookme-dashboard\src\components\HostCarsTab.jsx:32:function AddCarForm({ token, onCreated, onCancel }) {
+bhookme-dashboard\src\components\HostCarsTab.jsx:54:      const res = await fetch(`${API_BASE_URL}/cars`, {
+bhookme-dashboard\src\components\HostCarsTab.jsx:164:    fetch(`${API_BASE_URL}/cars/mine`, { headers: { Authorization: `Bearer ${token}` } })
+bhookme-dashboard\src\components\HostCarsTab.jsx:187:      const res = await fetch(`${API_BASE_URL}/cars/${car.id}/status`, {
+bhookme-dashboard\src\components\HostCarsTab.jsx:209:          <AddCarForm
+bhookme-dashboard\src\context\WishlistContext.jsx:27:      fetch(`${API_BASE_URL}/wishlist/cars/ids`, { headers }).then((res) => (res.ok ? res.json() : [])).catch(() => []),
+bhookme-dashboard\src\context\WishlistContext.jsx:82:      const res = await fetch(`${API_BASE_URL}/wishlist/cars/${carId}`, {
+bhookme-dashboard\src\pages\CarDetailPage.jsx:237:    fetch(`${API_BASE_URL}/cars/${id}`)
+bhookme-dashboard\src\pages\CarDetailPage.jsx:255:    fetch(`${API_BASE_URL}/cars`)
+bhookme-dashboard\src\pages\ExplorePage.jsx:160:  // search ever fails, the word search's homes/cars are used instead.
+bhookme-dashboard\src\pages\ServicesPage.jsx:299:    fetch(`${API_BASE_URL}/properties/search/cars?${p.toString()}`)
+bhookme-dashboard\src\pages\WishlistPage.jsx:24:      fetch(`${API_BASE_URL}/wishlist/cars`, { headers }).then((res) => (res.ok ? res.json() : [])).catch(() => []),

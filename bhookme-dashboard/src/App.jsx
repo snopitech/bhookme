@@ -16,6 +16,7 @@ import HostDashboardPage from './pages/HostDashboardPage';
 import WishlistPage from './pages/WishlistPage';
 import ProfilePage from './pages/ProfilePage';
 import CarDetailPage from './pages/CarDetailPage';
+import LeaseDetailPage from './pages/LeaseDetailPage';
 import BecomeHostPage from './pages/BecomeHostPage';
 import TenantDashboardPage from './pages/TenantDashboardPage';
 import SearchResultsPage from './pages/SearchResultsPage';
@@ -27,6 +28,8 @@ import ExplorePage from './pages/ExplorePage';
 import HelpPage from './pages/HelpPage';
 import InfoPage from './pages/InfoPage';
 import HostResetPasswordPage from './pages/HostResetPasswordPage'; // NEW
+import StaysPage from './pages/StaysPage';
+import LeasesPage from './pages/LeasesPage';
 
 function App() {
   const location = useLocation();
@@ -57,11 +60,14 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/search" element={<SearchResultsPage />} />
           <Route path="/explore" element={<ExplorePage />} />
+          <Route path="/stays" element={<StaysPage />} />
+          <Route path="/leases" element={<LeasesPage />} />
           <Route path="/help" element={<HelpPage />} />
           <Route path="/info/:slug" element={<InfoPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/property/:id" element={<PropertyDetailPage />} />
           <Route path="/car/:id" element={<CarDetailPage />} />
+          <Route path="/lease/:id" element={<LeaseDetailPage />} />
           <Route path="/category/services" element={<ServicesPage />} />
           {/* Old car-rental address: car rentals now live on the Services page. */}
           <Route path="/category/car-rental" element={<Navigate to="/category/services?type=car-rentals" replace />} />

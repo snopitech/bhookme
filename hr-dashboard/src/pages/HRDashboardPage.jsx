@@ -6,6 +6,8 @@ const API_BASE_URL = import.meta.env.VITE_API_URL
   ? `${import.meta.env.VITE_API_URL}/api`
   : 'http://localhost:8080/api';
 
+const ACCOUNTS_PER_PAGE = 5;
+
 const ROLE_STYLES = {
   HR: 'bg-yellow-100 text-yellow-800',
   ADMIN: 'bg-blue-100 text-blue-800',
@@ -31,6 +33,14 @@ function ComingSoon({ label }) {
   );
 }
 
+function TwoStepBadge({ enabled }) {
+  return enabled ? (
+    <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">2-step on</span>
+  ) : (
+    <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">2-step not set up</span>
+  );
+}
+
 export default function HRDashboardPage() {
   const { admin, token, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('overview');
@@ -47,6 +57,13 @@ export default function HRDashboardPage() {
   const [role, setRole] = useState('ADMIN');
   const [success, setSuccess] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const [resettingId, setResettingId] = useState(null);
+  const [accountsNotice, setAccountsNotice] = useState(null); // { ok, text }
+
+  // Accounts tab: search + pagination
+  const [accountSearch, setAccountSearch] = useState('');
+  const [accountPage, setAccountPage] = useState(1);
 
   const fetchAccounts = () => {
     setAccountsLoading(true);
@@ -95,7 +112,9 @@ export default function HRDashboardPage() {
       const data = await res.json();
 
       if (res.ok) {
-        setSuccess(`${role === 'HR' ? 'HR' : 'Admin'} account created for ${data.email}.`);
+        setSuccess(
+          `${role === 'HR' ? 'HR' : 'Admin'} account created for ${data.email}. They'll set up two-step sign-in (authenticator app) the first time they sign in.`
+        );
         resetForm();
         fetchAccounts();
       } else {
@@ -108,8 +127,52 @@ export default function HRDashboardPage() {
     }
   };
 
+  // Lost phone: clear the account's authenticator app so they scan a new QR code.
+  const resetTwoStep = async (account) => {
+    const self = account.email === admin?.email;
+    const ok = window.confirm(
+      `Reset two-step sign-in for ${account.email}?\n\n` +
+        (self
+          ? 'This is YOUR account. You will scan a new QR code the next time you sign in.'
+          : 'They will scan a new QR code with their authenticator app the next time they sign in.')
+    );
+    if (!ok) return;
+    setResettingId(account.id);
+    setAccountsNotice(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/admin-auth/accounts/${account.id}/reset-2fa`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((data && data.message) || 'Could not reset two-step sign-in.');
+      setAccounts((prev) => prev.map((a) => (a.id === account.id ? { ...a, totpEnabled: false } : a)));
+      setAccountsNotice({ ok: true, text: `Two-step sign-in reset for ${account.email}.` });
+    } catch (err) {
+      setAccountsNotice({ ok: false, text: err.message });
+    } finally {
+      setResettingId(null);
+    }
+  };
+
   const hrCount = accounts.filter((a) => a.role === 'HR').length;
   const adminCount = accounts.filter((a) => a.role === 'ADMIN').length;
+
+  // Search by name, email or role; 5 accounts per page.
+  const searchTerm = accountSearch.trim().toLowerCase();
+  const filteredAccounts = searchTerm
+    ? accounts.filter((a) =>
+        [a.firstName, a.lastName, `${a.firstName || ''} ${a.lastName || ''}`, a.email, a.role]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(searchTerm))
+      )
+    : accounts;
+  const accountPages = Math.max(1, Math.ceil(filteredAccounts.length / ACCOUNTS_PER_PAGE));
+  const currentAccountPage = Math.min(accountPage, accountPages);
+  const pagedAccounts = filteredAccounts.slice(
+    (currentAccountPage - 1) * ACCOUNTS_PER_PAGE,
+    currentAccountPage * ACCOUNTS_PER_PAGE
+  );
 
   return (
     <div className="min-h-screen flex bg-gray-50">
@@ -288,23 +351,107 @@ export default function HRDashboardPage() {
 
           {activeTab === 'accounts' && (
             <div>
+              {accountsNotice && (
+                <div
+                  className={`mb-4 p-3 rounded-lg text-sm border ${
+                    accountsNotice.ok ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'
+                  }`}
+                  role="status"
+                >
+                  {accountsNotice.text}
+                </div>
+              )}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+                <input
+                  type="search"
+                  value={accountSearch}
+                  onChange={(e) => {
+                    setAccountSearch(e.target.value);
+                    setAccountPage(1);
+                  }}
+                  placeholder="Search by name, email or role"
+                  aria-label="Search accounts"
+                  className="w-full sm:w-80 px-4 py-2 border border-gray-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500"
+                />
+                {!accountsLoading && (
+                  <p className="text-sm text-gray-500 sm:ml-auto">
+                    {filteredAccounts.length} {filteredAccounts.length === 1 ? 'account' : 'accounts'}
+                    {searchTerm && ` matching "${accountSearch.trim()}"`}
+                  </p>
+                )}
+              </div>
+
               {accountsLoading ? (
                 <p className="text-gray-500">Loading...</p>
               ) : accounts.length === 0 ? (
                 <p className="text-gray-500">No accounts yet.</p>
+              ) : filteredAccounts.length === 0 ? (
+                <p className="text-gray-500">No accounts match your search.</p>
               ) : (
                 <div className="space-y-2">
-                  {accounts.map((a) => (
-                    <div key={a.id} className="flex items-center justify-between border border-gray-200 rounded-lg p-4 bg-white">
+                  {pagedAccounts.map((a) => (
+                    <div
+                      key={a.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border border-gray-200 rounded-lg p-4 bg-white"
+                    >
                       <div>
                         <p className="font-medium">{a.firstName} {a.lastName}</p>
                         <p className="text-sm text-gray-500">{a.email}</p>
                       </div>
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${ROLE_STYLES[a.role] || 'bg-gray-100 text-gray-700'}`}>
-                        {a.role}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <TwoStepBadge enabled={!!a.totpEnabled} />
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${ROLE_STYLES[a.role] || 'bg-gray-100 text-gray-700'}`}>
+                          {a.role}
+                        </span>
+                        {a.totpEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => resetTwoStep(a)}
+                            disabled={resettingId === a.id}
+                            className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50 ml-1"
+                          >
+                            {resettingId === a.id ? 'Resetting...' : 'Reset 2-step'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {!accountsLoading && filteredAccounts.length > ACCOUNTS_PER_PAGE && (
+                <div className="flex items-center justify-center gap-1.5 mt-4 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => setAccountPage(currentAccountPage - 1)}
+                    disabled={currentAccountPage === 1}
+                    className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    ‹ Prev
+                  </button>
+                  {Array.from({ length: accountPages }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setAccountPage(n)}
+                      aria-current={n === currentAccountPage ? 'page' : undefined}
+                      className={`min-w-[36px] px-3 py-1.5 rounded-lg ${
+                        n === currentAccountPage
+                          ? 'bg-yellow-500 text-gray-900 font-semibold'
+                          : 'border border-gray-300 bg-white hover:bg-gray-50'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setAccountPage(currentAccountPage + 1)}
+                    disabled={currentAccountPage === accountPages}
+                    className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    Next ›
+                  </button>
                 </div>
               )}
             </div>

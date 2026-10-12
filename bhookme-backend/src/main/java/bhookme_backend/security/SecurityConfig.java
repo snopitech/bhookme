@@ -65,6 +65,12 @@ public class SecurityConfig {
                 // anyRequest().authenticated() at the bottom.
                 .requestMatchers(HttpMethod.GET, "/api/experiences/mine").authenticated()
                 .requestMatchers(HttpMethod.GET, "/api/experiences", "/api/experiences/**").permitAll()
+                // Monthly stays & leases: a host's own list needs login (listed
+                // first so the public rule below doesn't swallow it); browsing a
+                // listing is open to everyone. Applying, approving, etc. need
+                // login via anyRequest().authenticated() at the bottom.
+                .requestMatchers(HttpMethod.GET, "/api/leases/mine").authenticated()
+                .requestMatchers(HttpMethod.GET, "/api/leases", "/api/leases/*").permitAll()
                 // Footer: newsletter signup and contact form are open to everyone.
                 .requestMatchers(HttpMethod.POST, "/api/newsletter/subscribe", "/api/contact").permitAll()
                 // Anyone with no account yet can apply to become a host.
@@ -72,6 +78,8 @@ public class SecurityConfig {
                 // Anyone can read a listing's approved reviews before logging in.
                 .requestMatchers(HttpMethod.GET, "/api/reviews/property/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/reviews/car/**").permitAll()
+                // Approved reviews on a lease page are public too.
+                .requestMatchers(HttpMethod.GET, "/api/lease-reviews/lease/**").permitAll()
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

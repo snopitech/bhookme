@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import ComingSoonTab from '../components/ComingSoonTab';
 import AddListingForm from '../components/AddListingForm';
@@ -8,6 +8,8 @@ import HostMessagesTab from '../components/HostMessagesTab';
 import HostReviewsTab from '../components/HostReviewsTab';
 import HostCarsTab from '../components/HostCarsTab';
 import HostBookingsTab from '../components/HostBookingsTab';
+import HostLeasesTab from '../components/HostLeasesTab';
+import LeaseDocumentsTab from '../components/LeaseDocumentsTab';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL
   ? `${import.meta.env.VITE_API_URL}/api`
@@ -24,16 +26,22 @@ const LISTING_STATUS_STYLES = {
 const TABS = [
   { id: 'houses', label: 'House Listings' },
   { id: 'cars', label: 'Car Rental' },
+  { id: 'leases', label: 'Monthly Leases' },
   { id: 'experiences', label: 'Experiences' },
   { id: 'bookings', label: 'Bookings' },
   { id: 'earnings', label: 'Earnings' },
   { id: 'reviews', label: 'Reviews' },
   { id: 'messages', label: 'Messages' },
+  { id: 'documents', label: 'Documents' },
 ];
 
 export default function HostDashboardPage() {
   const { token, user } = useAuth();
-  const [activeTab, setActiveTab] = useState('houses');
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => {
+    const t = searchParams.get('tab');
+    return TABS.some((tab) => tab.id === t) ? t : 'houses';
+  });
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingListing, setEditingListing] = useState(null);
   const [actingId, setActingId] = useState(null);
@@ -378,6 +386,8 @@ export default function HostDashboardPage() {
 
       {activeTab === 'cars' && <HostCarsTab />}
 
+      {activeTab === 'leases' && <HostLeasesTab />}
+
       {activeTab === 'experiences' && <HostExperiencesTab />}
 
       {activeTab === 'bookings' && <HostBookingsTab />}
@@ -415,6 +425,7 @@ export default function HostDashboardPage() {
 
       {activeTab === 'reviews' && <HostReviewsTab />}
       {activeTab === 'messages' && <HostMessagesTab />}
+      {activeTab === 'documents' && <LeaseDocumentsTab role="host" />}
     </div>
   );
 }

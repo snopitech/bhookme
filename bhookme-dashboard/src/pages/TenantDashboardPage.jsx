@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import MessageHostPanel from '../components/MessageHostPanel';
+import { downloadLeaseAgreementPdf } from '../utils/leaseAgreement';
+import LeaseChat from '../components/LeaseChat';
+import LeaseDocumentsTab from '../components/LeaseDocumentsTab';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL
   ? `${import.meta.env.VITE_API_URL}/api`
@@ -31,18 +34,38 @@ function todayString() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
+const LEASE_STATUS_LABELS = {
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  DECLINED: 'Declined',
+  CANCELLED: 'Withdrawn',
+};
+
+const LEASE_STATUS_STYLES = {
+  PENDING: 'bg-amber-100 text-amber-700',
+  APPROVED: 'bg-green-100 text-green-700',
+  DECLINED: 'bg-gray-100 text-gray-600',
+  CANCELLED: 'bg-gray-100 text-gray-500',
+};
+
 const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'houses', label: 'House Bookings' },
   { id: 'cars', label: 'Car Rentals' },
+  { id: 'leases', label: 'Leases' },
   { id: 'payments', label: 'Payments & Balance' },
+  { id: 'documents', label: 'Documents' },
   { id: 'maintenance', label: 'Maintenance & Messages' },
   { id: 'account', label: 'Account' },
 ];
 
 export default function TenantDashboardPage() {
   const { user, token } = useAuth();
-  const [activeTab, setActiveTab] = useState('overview');
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => {
+    const t = searchParams.get('tab');
+    return TABS.some((tab) => tab.id === t) ? t : 'overview';
+  });
 
   const [bookings, setBookings] = useState([]);
   const [bookingsLoading, setBookingsLoading] = useState(true);
@@ -51,6 +74,20 @@ export default function TenantDashboardPage() {
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState(null);
   const [openMessageKey, setOpenMessageKey] = useState(null);
+  const [leaseApps, setLeaseApps] = useState([]);
+  const [leaseAppsLoading, setLeaseAppsLoading] = useState(true);
+  const [pdfBusyId, setPdfBusyId] = useState(null);
+
+  const downloadAgreement = async (app) => {
+    setPdfBusyId(app.id);
+    try {
+      await downloadLeaseAgreementPdf(app.agreement);
+    } catch (err) {
+      setError('Could not create the lease agreement PDF. Please try again.');
+    } finally {
+      setPdfBusyId(null);
+    }
+  };
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/bookings/mine`, {
@@ -82,18 +119,59 @@ export default function TenantDashboardPage() {
       });
   }, [token]);
 
-  const loading = bookingsLoading || carBookingsLoading;
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/lease-applications/mine`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setLeaseApps(Array.isArray(data) ? data : []))
+      .catch(() => setLeaseApps([]))
+      .finally(() => setLeaseAppsLoading(false));
+  }, [token]);
+
+  const loading = bookingsLoading || carBookingsLoading || leaseAppsLoading;
+
+  // Leases: the amount due shows only once the host approves.
+  const leasesDue = leaseApps.filter((a) => a.status === 'APPROVED' && !a.paid && a.amountDue != null);
+  const pendingLeaseBalance = leasesDue.reduce((sum, a) => sum + Number(a.amountDue), 0);
+  const paidLeaseTotal = leaseApps.filter((a) => a.status === 'APPROVED' && a.paid).reduce((sum, a) => sum + Number(a.amountDue || 0), 0);
+  const openLeaseCount = leaseApps.filter((a) => a.status === 'PENDING' || a.status === 'APPROVED').length;
+  const activeLeases = leaseApps.filter((a) => a.status === 'APPROVED');
+  const unreadLeaseMessages = leaseApps.reduce((sum, a) => sum + (a.unreadMessages || 0), 0);
+  const patchLeaseApp = (id, patch) => setLeaseApps((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+
+  const cancelLeaseApp = async (app) => {
+    if (!window.confirm('Withdraw this lease application?')) return;
+    setCancellingId(`lease-${app.id}`);
+    try {
+      const res = await fetch(`${API_BASE_URL}/lease-applications/${app.id}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok) {
+        setLeaseApps((prev) => prev.map((a) => (a.id === data.id ? data : a)));
+      } else {
+        setError((data && data.message) || 'Could not withdraw this application.');
+      }
+    } catch (err) {
+      setError('Could not reach the server.');
+    } finally {
+      setCancellingId(null);
+    }
+  };
 
   const upcomingStays = bookings.filter((b) => ['PENDING', 'CONFIRMED'].includes(b.status) && b.checkInDate >= todayString());
   const activeCarRentals = carBookings.filter((b) => ['PENDING', 'CONFIRMED'].includes(b.status) && b.endDate >= todayString());
 
   const pendingHouseBalance = bookings.filter((b) => b.status === 'PENDING').reduce((sum, b) => sum + Number(b.totalPrice), 0);
   const pendingCarBalance = carBookings.filter((b) => b.status === 'PENDING').reduce((sum, b) => sum + Number(b.totalPrice), 0);
-  const totalBalanceDue = pendingHouseBalance + pendingCarBalance;
+  const totalBalanceDue = pendingHouseBalance + pendingCarBalance + pendingLeaseBalance;
 
-  const totalSpent = [...bookings, ...carBookings]
-    .filter((b) => ['CONFIRMED', 'COMPLETED'].includes(b.status))
-    .reduce((sum, b) => sum + Number(b.totalPrice), 0);
+  const totalSpent =
+    [...bookings, ...carBookings]
+      .filter((b) => ['CONFIRMED', 'COMPLETED'].includes(b.status))
+      .reduce((sum, b) => sum + Number(b.totalPrice), 0) + paidLeaseTotal;
 
   const canCancelHouse = (b) => ['PENDING', 'CONFIRMED'].includes(b.status) && b.checkInDate >= todayString();
   const canCancelCar = (b) => ['PENDING', 'CONFIRMED'].includes(b.status) && b.startDate >= todayString();
@@ -161,6 +239,9 @@ export default function TenantDashboardPage() {
             }`}
           >
             {tab.label}
+            {tab.id === 'leases' && unreadLeaseMessages > 0 && (
+              <span className="ml-1.5 bg-rose-500 text-white text-xs font-bold rounded-full px-1.5">{unreadLeaseMessages}</span>
+            )}
           </button>
         ))}
       </div>
@@ -173,7 +254,7 @@ export default function TenantDashboardPage() {
             <p className="text-gray-500">Loading your dashboard...</p>
           ) : (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
                 <div className="border border-gray-200 rounded-xl p-4">
                   <p className="text-sm text-gray-500">Upcoming stays</p>
                   <p className="text-2xl font-bold">{upcomingStays.length}</p>
@@ -182,6 +263,14 @@ export default function TenantDashboardPage() {
                   <p className="text-sm text-gray-500">Active car rentals</p>
                   <p className="text-2xl font-bold">{activeCarRentals.length}</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('leases')}
+                  className="border border-gray-200 rounded-xl p-4 text-left hover:shadow-md transition"
+                >
+                  <p className="text-sm text-gray-500">Lease applications</p>
+                  <p className="text-2xl font-bold">{openLeaseCount}</p>
+                </button>
                 <div className="border border-gray-200 rounded-xl p-4">
                   <p className="text-sm text-gray-500">Balance due</p>
                   <p className="text-2xl font-bold text-amber-700">${totalBalanceDue.toFixed(2)}</p>
@@ -356,6 +445,159 @@ export default function TenantDashboardPage() {
         </div>
       )}
 
+      {activeTab === 'leases' && (
+        <div>
+          {leaseAppsLoading && <p className="text-gray-500">Loading...</p>}
+          {!leaseAppsLoading && leaseApps.length === 0 && (
+            <div className="text-center py-16 border border-dashed border-gray-300 rounded-xl">
+              <p className="text-gray-500 mb-4">No lease applications yet.</p>
+              <Link to="/" className="text-rose-500 font-medium hover:underline">Browse monthly stays</Link>
+            </div>
+          )}
+          <div className="space-y-4">
+            {leaseApps.map((a) => {
+              const key = `lease-${a.id}`;
+              const canWithdraw = a.status === 'PENDING' || (a.status === 'APPROVED' && !a.paid);
+              return (
+                <div key={a.id} className={`border border-gray-200 rounded-xl p-4 ${['CANCELLED', 'DECLINED'].includes(a.status) ? 'opacity-70' : ''}`}>
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <Link to={`/lease/${a.leaseId}`} className="shrink-0">
+                      <img src={a.leaseImageUrl || 'https://placehold.co/300x200?text=Home'} alt={a.leaseTitle} className="w-full sm:w-44 h-32 object-cover rounded-lg bg-gray-200" />
+                    </Link>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <Link to={`/lease/${a.leaseId}`} className="font-semibold hover:underline block truncate">{a.leaseTitle}</Link>
+                          <p className="text-sm text-gray-500">{[a.leaseCity, a.leaseState].filter(Boolean).join(', ')}</p>
+                        </div>
+                        <span className={`shrink-0 px-2 py-1 rounded-full text-xs font-medium ${LEASE_STATUS_STYLES[a.status] || 'bg-gray-100'}`}>
+                          {a.status === 'APPROVED' && a.confirmed
+                            ? 'Confirmed'
+                            : a.status === 'APPROVED' && a.paid
+                              ? 'Approved · Paid'
+                              : LEASE_STATUS_LABELS[a.status] || a.status}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm">
+                        Move in {formatDate(a.moveInDate)} to {formatDate(a.moveOutDate)}
+                        <span className="text-gray-500"> ({a.months} month{a.months !== 1 ? 's' : ''} · ${Number(a.monthlyRent).toFixed(2)}/month)</span>
+                      </p>
+
+                      {a.status === 'PENDING' && (
+                        <p className="mt-2 text-sm text-amber-700">
+                          The host is reviewing your application. The amount to pay will appear here once it's approved.
+                        </p>
+                      )}
+
+                      {a.status === 'APPROVED' && (
+                        <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
+                          {a.leaseAddress && (
+                            <p className="mb-1">
+                              <span className="font-medium">Address:</span> {a.leaseAddress}
+                              {a.leaseZip ? `, ${a.leaseZip}` : ''}
+                            </p>
+                          )}
+                          <div className="flex justify-between"><span>First month</span><span>${Number(a.monthlyRent).toFixed(2)}</span></div>
+                          <div className="flex justify-between"><span>Security deposit</span><span>${Number(a.securityDeposit).toFixed(2)}</span></div>
+                          <div className="flex justify-between font-semibold border-t border-green-200 mt-1 pt-1">
+                            <span>{a.paid ? 'Paid' : 'Amount due now'}</span>
+                            <span>${Number(a.amountDue).toFixed(2)}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {a.status === 'APPROVED' && a.paid && !a.confirmed && (
+                        <p className="mt-2 text-sm text-gray-600">
+                          Payment received. Your host will confirm your lease next - your signed lease agreement (PDF) will then appear in{' '}
+                          <button type="button" onClick={() => setActiveTab('documents')} className="text-rose-500 font-medium hover:underline">
+                            Documents
+                          </button>
+                          .
+                        </p>
+                      )}
+
+                      {a.agreement && (
+                        <div className="mt-3 flex items-center justify-between gap-3 border border-gray-200 rounded-lg p-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="text-2xl" aria-hidden="true">📄</span>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">Signed lease agreement · Confirmed</p>
+                              <p className="text-xs text-gray-500 truncate">
+                                Signed by {a.agreement.signatureName} · PDF · also in{' '}
+                                <button type="button" onClick={() => setActiveTab('documents')} className="text-rose-500 hover:underline">
+                                  Documents
+                                </button>
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => downloadAgreement(a)}
+                            disabled={pdfBusyId === a.id}
+                            className="shrink-0 bg-gray-900 hover:bg-black text-white text-sm font-medium px-4 py-2 rounded-lg disabled:opacity-50"
+                          >
+                            {pdfBusyId === a.id ? 'Preparing...' : 'Download PDF'}
+                          </button>
+                        </div>
+                      )}
+
+                      {a.hostNote && ['APPROVED', 'DECLINED'].includes(a.status) && (
+                        <p className="mt-2 text-sm text-gray-600">
+                          <span className="font-medium">Note from host:</span> {a.hostNote}
+                        </p>
+                      )}
+
+                      <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
+                        <p className="font-semibold">${Number(a.leaseTotal).toFixed(2)} lease total</p>
+                        <div className="flex items-center gap-3">
+                          {a.status !== 'CANCELLED' && (
+                            <button onClick={() => toggleMessage(key)} className="text-sm text-rose-500 font-medium hover:underline">
+                              {openMessageKey === key ? 'Hide messages' : 'Message host'}
+                              {a.unreadMessages > 0 && openMessageKey !== key && (
+                                <span className="ml-1 bg-rose-500 text-white text-xs font-bold rounded-full px-1.5">{a.unreadMessages}</span>
+                              )}
+                            </button>
+                          )}
+                          {a.status === 'APPROVED' && !a.paid && (
+                            <button disabled className="bg-gray-300 text-gray-500 text-sm font-medium px-4 py-2 rounded-lg cursor-not-allowed">
+                              Pay now
+                            </button>
+                          )}
+                          {canWithdraw && (
+                            <button
+                              onClick={() => cancelLeaseApp(a)}
+                              disabled={cancellingId === key}
+                              className="text-sm text-red-500 font-medium hover:underline disabled:opacity-50"
+                            >
+                              {cancellingId === key ? 'Withdrawing...' : 'Withdraw'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {openMessageKey === key && (
+                    <div className="mt-3">
+                      <LeaseChat
+                        applicationId={a.id}
+                        otherName={a.hostName || 'your host'}
+                        closed={a.status === 'CANCELLED'}
+                        onRead={() => patchLeaseApp(a.id, { unreadMessages: 0 })}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {leasesDue.length > 0 && (
+            <p className="mt-4 text-sm text-gray-500">
+              Online payment isn't connected yet. Arrange payment with your host - they'll mark it paid here.
+            </p>
+          )}
+        </div>
+      )}
+
       {activeTab === 'payments' && (
         <div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
@@ -376,13 +618,18 @@ export default function TenantDashboardPage() {
           <h2 className="text-lg font-semibold mb-3">Awaiting payment</h2>
           <div className="space-y-3">
             {[...bookings.filter((b) => b.status === 'PENDING').map((b) => ({ ...b, kind: 'house', label: b.propertyTitle })),
-              ...carBookings.filter((b) => b.status === 'PENDING').map((b) => ({ ...b, kind: 'car', label: `${b.make} ${b.model}` }))]
+              ...carBookings.filter((b) => b.status === 'PENDING').map((b) => ({ ...b, kind: 'car', label: `${b.make} ${b.model}` })),
+              ...leasesDue.map((a) => ({ ...a, kind: 'lease', label: `${a.leaseTitle} (first month + deposit)`, totalPrice: a.amountDue }))]
               .map((b) => (
                 <div key={`${b.kind}-${b.id}`} className="flex items-center justify-between gap-3 border border-gray-200 rounded-xl p-4">
                   <div>
                     <p className="font-medium">{b.label}</p>
                     <p className="text-sm text-gray-500">
-                      {b.kind === 'house' ? `${formatDate(b.checkInDate)} - ${formatDate(b.checkOutDate)}` : `${formatDate(b.startDate)} - ${formatDate(b.endDate)}`}
+                      {b.kind === 'house'
+                        ? `${formatDate(b.checkInDate)} - ${formatDate(b.checkOutDate)}`
+                        : b.kind === 'lease'
+                          ? `Lease ${formatDate(b.moveInDate)} - ${formatDate(b.moveOutDate)}`
+                          : `${formatDate(b.startDate)} - ${formatDate(b.endDate)}`}
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
@@ -400,12 +647,14 @@ export default function TenantDashboardPage() {
         </div>
       )}
 
+      {activeTab === 'documents' && <LeaseDocumentsTab role="tenant" />}
+
       {activeTab === 'maintenance' && (
         <div>
           <p className="text-gray-500 mb-4">Reach out to your host about any active or upcoming booking.</p>
           {loading ? (
             <p className="text-gray-500">Loading...</p>
-          ) : upcomingStays.length === 0 && activeCarRentals.length === 0 ? (
+          ) : upcomingStays.length === 0 && activeCarRentals.length === 0 && activeLeases.length === 0 ? (
             <div className="text-center py-16 border border-dashed border-gray-300 rounded-xl">
               <p className="text-gray-500">No active bookings to message a host about yet.</p>
             </div>
@@ -421,6 +670,16 @@ export default function TenantDashboardPage() {
                 <div key={`msg-car-${b.id}`} className="border border-gray-200 rounded-xl p-4">
                   <p className="font-medium mb-2">{b.make} {b.model}</p>
                   <MessageHostPanel carId={b.carId} hostId={b.hostId} hostName={`${b.make} ${b.model}`} />
+                </div>
+              ))}
+              {activeLeases.map((a) => (
+                <div key={`msg-lease-${a.id}`} className="border border-gray-200 rounded-xl p-4">
+                  <p className="font-medium mb-2">🏡 {a.leaseTitle} <span className="text-sm font-normal text-gray-500">(lease)</span></p>
+                  <LeaseChat
+                    applicationId={a.id}
+                    otherName={a.hostName || 'your host'}
+                    onRead={() => patchLeaseApp(a.id, { unreadMessages: 0 })}
+                  />
                 </div>
               ))}
             </div>

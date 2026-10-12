@@ -29,9 +29,25 @@ const EMPTY_FORM = {
 const inputClass =
   'w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white';
 
-function AddCarForm({ token, onCreated, onCancel }) {
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [photos, setPhotos] = useState([]);
+// Used for both "Add a car" and "Edit car". Pass `car` to edit it.
+function CarForm({ token, car, onSaved, onCancel }) {
+  const isEdit = Boolean(car);
+  const [form, setForm] = useState(() =>
+    isEdit
+      ? {
+          make: car.make || '',
+          model: car.model || '',
+          year: String(car.year || new Date().getFullYear()),
+          category: car.category || '',
+          city: car.city || '',
+          state: car.state || '',
+          dailyRate: car.dailyRate != null ? String(car.dailyRate) : '',
+        }
+      : EMPTY_FORM
+  );
+  const [photos, setPhotos] = useState(() =>
+    isEdit ? (car.imageUrls && car.imageUrls.length ? car.imageUrls : car.imageUrl ? [car.imageUrl] : []) : []
+  );
   const [photosUploading, setPhotosUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -51,14 +67,14 @@ function AddCarForm({ token, onCreated, onCancel }) {
     }
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/cars`, {
-        method: 'POST',
+      const res = await fetch(isEdit ? `${API_BASE_URL}/cars/${car.id}` : `${API_BASE_URL}/cars`, {
+        method: isEdit ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ ...form, imageUrls: photos }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((data && data.message) || 'Could not create the car listing.');
-      onCreated(data);
+      if (!res.ok) throw new Error((data && data.message) || (isEdit ? 'Could not save your changes.' : 'Could not create the car listing.'));
+      onSaved(data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -141,7 +157,7 @@ function AddCarForm({ token, onCreated, onCancel }) {
           disabled={saving || photosUploading}
           className="bg-rose-500 hover:bg-rose-600 text-white font-semibold px-6 py-3 rounded-lg transition disabled:opacity-50"
         >
-          {photosUploading ? 'Uploading photos...' : saving ? 'Publishing...' : 'Publish car'}
+          {photosUploading ? 'Uploading photos...' : saving ? 'Saving...' : isEdit ? 'Save changes' : 'Publish car'}
         </button>
         <button type="button" onClick={onCancel} className="px-6 py-3 rounded-lg border border-gray-300 font-medium hover:bg-gray-50">
           Cancel
@@ -157,6 +173,7 @@ export default function HostCarsTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [editingCar, setEditingCar] = useState(null);
   const [actingId, setActingId] = useState(null);
   const [page, setPage] = useState(1);
 
@@ -199,16 +216,53 @@ export default function HostCarsTab() {
     }
   };
 
+  const deleteCar = async (car) => {
+    const name = `${car.year} ${car.make} ${car.model}`;
+    if (!window.confirm(`Delete ${name}? Guests will no longer see it. This can't be undone.`)) return;
+    setActingId(car.id);
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/cars/${car.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((data && data.message) || 'Could not delete this car.');
+      setCars((prev) => prev.filter((c) => c.id !== car.id));
+      if (editingCar && editingCar.id === car.id) setEditingCar(null);
+    } catch (err) {
+      window.alert(err.message);
+    } finally {
+      setActingId(null);
+    }
+  };
+
   const activeCount = cars.filter((c) => c.status === 'ACTIVE').length;
 
   return (
     <div>
-      {showForm ? (
+      {editingCar ? (
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 mb-6">
+          <h2 className="text-lg font-semibold mb-4">
+            Edit {editingCar.year} {editingCar.make} {editingCar.model}
+          </h2>
+          <CarForm
+            key={editingCar.id}
+            token={token}
+            car={editingCar}
+            onSaved={(saved) => {
+              setCars((prev) => prev.map((c) => (c.id === saved.id ? saved : c)));
+              setEditingCar(null);
+            }}
+            onCancel={() => setEditingCar(null)}
+          />
+        </div>
+      ) : showForm ? (
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 mb-6">
           <h2 className="text-lg font-semibold mb-4">Add a car listing</h2>
-          <AddCarForm
+          <CarForm
             token={token}
-            onCreated={(car) => {
+            onSaved={(car) => {
               setCars((prev) => [car, ...prev]);
               setShowForm(false);
               setPage(1);
@@ -304,6 +358,23 @@ export default function HostCarsTab() {
                           className="text-gray-700 font-medium hover:underline mr-4 disabled:opacity-50"
                         >
                           {actingId === car.id ? 'Saving...' : car.status === 'ACTIVE' ? 'Pause' : 'Activate'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowForm(false);
+                            setEditingCar(car);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-gray-700 font-medium hover:underline mr-4"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deleteCar(car)}
+                          disabled={actingId === car.id}
+                          className="text-red-600 font-medium hover:underline mr-4 disabled:opacity-50"
+                        >
+                          Delete
                         </button>
                         <Link to={`/car/${car.id}`} className="text-rose-500 font-medium hover:underline">
                           View

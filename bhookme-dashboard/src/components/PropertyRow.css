@@ -14,7 +14,8 @@
 
 .property-row-scroll {
   display: flex;
-  gap: 1.5rem;
+  gap: 1rem;
+  padding: 0.5rem 0.25rem;
   overflow-x: auto;
   scroll-behavior: smooth;
   scroll-snap-type: x mandatory;
@@ -26,14 +27,24 @@
   display: none;
 }
 
+/* Small round photos: 3 across on phones and tablets, 4 on computers. */
 .property-row-item {
-  flex: 0 0 calc((100% - 1.5rem) / 2);
+  flex: 0 0 calc((100% - 2rem) / 3);
+  /* Without this, a long title makes its card (and photo) wider than
+     the others. Long text gets "..." instead. */
+  min-width: 0;
   scroll-snap-align: start;
+}
+
+@media (min-width: 1024px) {
+  .property-row-item {
+    flex-basis: calc((100% - 3rem) / 4);
+  }
 }
 
 .property-row-arrow {
   position: absolute;
-  top: 40%;
+  top: 32%;
   transform: translateY(-50%);
   width: 32px;
   height: 32px;

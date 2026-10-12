@@ -20,10 +20,16 @@ public class AdminAuthController {
         this.adminAuthService = adminAuthService;
     }
 
+    // Two-step sign-in, both steps here (already public in SecurityConfig):
+    //   1. {email, password}      -> {totpRequired|setupRequired, challengeId, ...}
+    //   2. {challengeId, code}    -> {token, id, email, firstName, lastName, role}
+    // The browser's Origin header tells us which dashboard is signing in
+    // (admin.bhookme.com vs hr.bhookme.com), so each has its own app entry.
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody AdminLoginRequest request) {
+    public ResponseEntity<?> login(@RequestBody AdminLoginRequest request,
+                                   @RequestHeader(value = "Origin", required = false) String origin) {
         try {
-            return ResponseEntity.ok(adminAuthService.login(request));
+            return ResponseEntity.ok(adminAuthService.login(request, origin));
         } catch (RuntimeException e) {
             return error(e);
         }
@@ -53,11 +59,21 @@ public class AdminAuthController {
     }
 
     // HR-only: list every admin/HR account - for the HR dashboard's
-    // Accounts tab.
+    // Accounts tab (includes whether two-step sign-in is set up).
     @GetMapping("/accounts")
     public ResponseEntity<?> accounts(Authentication authentication) {
         try {
             return ResponseEntity.ok(adminAuthService.getAllAccounts(authentication.getName()));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    // HR-only: reset an account's authenticator apps for both dashboards (e.g. lost phone).
+    @PostMapping("/accounts/{id}/reset-2fa")
+    public ResponseEntity<?> resetTwoFactor(Authentication authentication, @PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(adminAuthService.resetTwoFactor(authentication.getName(), id));
         } catch (RuntimeException e) {
             return error(e);
         }

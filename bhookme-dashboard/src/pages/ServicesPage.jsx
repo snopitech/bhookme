@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { pick } from '../components/MockMap';
+import { pick } from '../components/MapPanel';
 import { SERVICE_CATEGORIES, findServiceCategory } from '../data/serviceCategories';
 
 const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:8080';

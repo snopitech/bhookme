@@ -9,8 +9,10 @@ const API_BASE_URL = import.meta.env.VITE_API_URL
 const UNREAD_REFRESH_MS = 30000; // re-check unread messages every 30 seconds
 
 // Mobile-only bottom navigation (hidden on large screens).
+// 8 buttons: Explore, Short Stay, Lease, Cars, Wishlist, Trips,
+// Messages, Profile. Labels use 9px text on phones so all 8 fit.
 export default function MobileBottomNav() {
-  const { token, isAuthenticated, hostVerified } = useAuth();
+  const { token, isAuthenticated } = useAuth();
   const { pathname, search } = useLocation();
   const [unread, setUnread] = useState(0);
 
@@ -50,6 +52,22 @@ export default function MobileBottomNav() {
       active: pathname === '/explore',
     },
     {
+      // Nightly house listings - every home on one page.
+      key: 'stays',
+      label: 'shortStay',
+      icon: '🏠',
+      to: '/stays',
+      active: pathname === '/stays' || pathname.startsWith('/property/'),
+    },
+    {
+      // Monthly leases - every lease listing on one page.
+      key: 'leases',
+      label: 'Lease',
+      icon: '📅',
+      to: '/leases',
+      active: pathname === '/leases' || pathname.startsWith('/lease/'),
+    },
+    {
       key: 'cars',
       label: 'Cars',
       icon: '🚗',
@@ -80,15 +98,6 @@ export default function MobileBottomNav() {
       badge: unread,
     },
     {
-      key: 'host',
-      label: hostVerified ? 'Hosting' : 'Host',
-      icon: '🏠',
-      // Approved + verified hosts go straight in; everyone else goes through the
-      // host check (password + code, or the "no host account" + apply form).
-      to: hostVerified ? '/host/dashboard' : '/become-host',
-      active: pathname.startsWith('/host/') || pathname === '/become-host',
-    },
-    {
       key: 'profile',
       label: isAuthenticated ? 'Profile' : 'Log in',
       icon: '👤',
@@ -103,20 +112,20 @@ export default function MobileBottomNav() {
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       aria-label="Main"
     >
-      <ul className="grid grid-cols-7">
+      <ul className="grid grid-cols-8">
         {items.map((item) => (
           <li key={item.key}>
             <Link
               to={item.to}
               aria-current={item.active ? 'page' : undefined}
-              className={`relative flex flex-col items-center justify-center gap-0.5 h-16 text-[10px] font-medium transition ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 h-16 text-[9px] sm:text-[10px] tracking-tight font-medium transition ${
                 item.active ? 'text-rose-500' : 'text-gray-500 hover:text-gray-800'
               }`}
             >
-              <span className={`text-xl leading-none ${item.active ? '' : 'opacity-80'}`} aria-hidden="true">
+              <span className={`text-lg sm:text-xl leading-none ${item.active ? '' : 'opacity-80'}`} aria-hidden="true">
                 {item.icon}
               </span>
-              <span className="truncate max-w-full px-0.5">{item.label}</span>
+              <span className="whitespace-nowrap max-w-full overflow-hidden">{item.label}</span>
               {item.badge > 0 && (
                 <span className="absolute top-1.5 right-1/2 translate-x-4 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">
                   {item.badge > 9 ? '9+' : item.badge}

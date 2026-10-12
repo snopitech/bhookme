@@ -30,7 +30,21 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// House and car reviews come from /api/reviews, monthly-lease reviews
+// from /api/lease-reviews. Their ids can overlap, so each review gets a
+// kind ('stay' or 'lease') and the pair is used as its key.
+function isLeaseReview(r) {
+  return r.kind === 'lease' || r.leaseId != null;
+}
+
+function reviewKey(r) {
+  return `${isLeaseReview(r) ? 'lease' : 'stay'}-${r.id}`;
+}
+
 function listingOf(r) {
+  if (isLeaseReview(r)) {
+    return { key: `lease-${r.leaseId}`, label: r.leaseTitle, link: `/lease/${r.leaseId}`, icon: '🏡' };
+  }
   return r.propertyId
     ? { key: `property-${r.propertyId}`, label: r.propertyTitle, link: `/property/${r.propertyId}`, icon: '🏠' }
     : { key: `car-${r.carId}`, label: r.carLabel, link: `/car/${r.carId}`, icon: '🚗' };
@@ -64,10 +78,18 @@ function ReviewCard({ review, token, onUpdated }) {
     }
   };
 
-  const setStatus = (status) => call(`${API_BASE_URL}/reviews/moderate/${review.id}`, { status });
+  const lease = isLeaseReview(review);
+  const setStatus = (status) =>
+    call(
+      lease ? `${API_BASE_URL}/lease-reviews/${review.id}/status` : `${API_BASE_URL}/reviews/moderate/${review.id}`,
+      { status }
+    );
 
   const saveReply = async (text) => {
-    const ok = await call(`${API_BASE_URL}/reviews/${review.id}/reply`, { reply: text });
+    const ok = await call(
+      lease ? `${API_BASE_URL}/lease-reviews/${review.id}/reply` : `${API_BASE_URL}/reviews/${review.id}/reply`,
+      { reply: text }
+    );
     if (ok) setReplyOpen(false);
   };
 
@@ -87,7 +109,7 @@ function ReviewCard({ review, token, onUpdated }) {
               {review.reviewerDisplayName}
               {review.isVerifiedStay && (
                 <span className="ml-2 align-middle text-xs font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded-full">
-                  Verified guest
+                  {lease ? 'Verified tenant' : 'Verified guest'}
                 </span>
               )}
             </p>
@@ -225,13 +247,24 @@ export default function HostReviewsTab() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/reviews/host`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(async (res) => {
+    const headers = { Authorization: `Bearer ${token}` };
+    Promise.all([
+      fetch(`${API_BASE_URL}/reviews/host`, { headers }).then(async (res) => {
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error((data && data.message) || 'Could not load your reviews.');
         return Array.isArray(data) ? data : [];
-      })
-      .then((data) => {
+      }),
+      // Lease reviews are extra - if they fail, still show house and car reviews.
+      fetch(`${API_BASE_URL}/lease-reviews/host`, { headers })
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data) => (Array.isArray(data) ? data.map((r) => ({ ...r, kind: 'lease' })) : []))
+        .catch(() => []),
+    ])
+      .then(([stays, leases]) => {
+        // Newest first across houses, cars and leases.
+        const data = [...stays, ...leases].sort(
+          (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+        );
         setReviews(data);
         // Open on "To review" if anything is waiting, otherwise on "Approved".
         if (!statusPicked && !data.some((r) => r.status === 'PENDING')) setStatus('APPROVED');
@@ -287,7 +320,8 @@ export default function HostReviewsTab() {
 
   const paginatedShown = shown.slice((page - 1) * REVIEWS_PER_PAGE, page * REVIEWS_PER_PAGE);
 
-  const replace = (updated) => setReviews((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+  const replace = (updated) =>
+    setReviews((prev) => prev.map((r) => (reviewKey(r) === reviewKey(updated) ? updated : r)));
 
   if (loading) return <p className="text-gray-500">Loading your reviews...</p>;
   if (error) return <p className="text-red-500">{error}</p>;
@@ -297,7 +331,7 @@ export default function HostReviewsTab() {
       <div className="text-center py-16 border border-dashed border-gray-300 rounded-xl">
         <p className="text-4xl mb-3" aria-hidden="true">⭐</p>
         <p className="font-semibold mb-1">No reviews yet</p>
-        <p className="text-gray-500 text-sm">When guests review your homes or cars, you'll approve, ignore, or reply to them here.</p>
+        <p className="text-gray-500 text-sm">When guests review your homes, cars or monthly stays, you'll approve, ignore, or reply to them here.</p>
       </div>
     );
   }
@@ -394,7 +428,7 @@ export default function HostReviewsTab() {
         <>
           <div className="space-y-4">
             {paginatedShown.map((r) => (
-              <ReviewCard key={r.id} review={r} token={token} onUpdated={replace} />
+              <ReviewCard key={reviewKey(r)} review={r} token={token} onUpdated={replace} />
             ))}
           </div>
 

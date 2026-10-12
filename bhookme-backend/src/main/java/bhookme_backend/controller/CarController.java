@@ -71,12 +71,35 @@ public class CarController {
         }
     }
 
+    // Edit a car listing (owner only) - same body as create.
+    @PutMapping("/{id}")
+    public ResponseEntity<?> update(Authentication authentication, @PathVariable("id") Long id,
+                                    @RequestBody Map<String, Object> body) {
+        try {
+            if (authentication == null) throw new RuntimeException("Please log in.");
+            return ResponseEntity.ok(carService.updateCar(authentication.getName(), id, body));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
     // Pause or reactivate: {"status": "INACTIVE"} or {"status": "ACTIVE"}
     @PutMapping("/{id}/status")
     public ResponseEntity<?> setStatus(Authentication authentication, @PathVariable("id") Long id,
                                        @RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(carService.setStatus(authentication.getName(), id, body.get("status")));
+        } catch (RuntimeException e) {
+            return error(e);
+        }
+    }
+
+    // Delete a car listing (owner only).
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> delete(Authentication authentication, @PathVariable("id") Long id) {
+        try {
+            if (authentication == null) throw new RuntimeException("Please log in.");
+            return ResponseEntity.ok(carService.deleteCar(authentication.getName(), id));
         } catch (RuntimeException e) {
             return error(e);
         }

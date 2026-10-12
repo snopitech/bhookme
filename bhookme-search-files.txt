@@ -1,0 +1,2091 @@
+===== C:\Users\snoop\airbnb\bhookme-dashboard\src\pages\HomePage.jsx 
+import React, { useEffect, useState } from 'react';
+import PropertyRow from '../components/PropertyRow';
+import MapPanel from '../components/MapPanel';
+import CarRentalRow from '../components/CarRentalRow';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : 'http://localhost:8080/api';
+
+export default function HomePage() {
+  const [properties, setProperties] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/properties`)
+      .then((res) => res.json())
+      .then((data) => {
+        setProperties(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        setError('Could not load properties. Is the backend running?');
+        setLoading(false);
+      });
+  }, []);
+
+  const cityGroups = properties.reduce((groups, property) => {
+    const key = `${property.city}, ${property.state}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(property);
+    return groups;
+  }, {});
+
+  return (
+    <div>
+      {/* Mobile-only map - renders INLINE right under the header.
+          Pushes every section below it down when open. Closed by
+          default; the header's Map button toggles it. */}
+      <div className="lg:hidden px-6 pt-4">
+        <MapPanel mobileOnly />
+      </div>
+
+      <CarRentalRow />
+
+      {loading && (
+        <div className="max-w-7xl mx-auto px-6 py-8 text-gray-500">Loading properties...</div>
+      )}
+
+      {!loading && error && (
+        <div className="max-w-7xl mx-auto px-6 py-8 text-red-500">{error}</div>
+      )}
+
+      {!loading && !error && properties.length === 0 && (
+        <div className="max-w-7xl mx-auto px-6 py-8 text-gray-500">
+          No listings yet. Be the first to become a host!
+        </div>
+      )}
+
+      {!loading && !error && properties.length > 0 && (
+        <div className="max-w-[1600px] mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2">
+            {Object.entries(cityGroups).map(([cityLabel, cityProperties]) => (
+              <PropertyRow
+                key={cityLabel}
+                title={`Stay in ${cityLabel}`}
+                properties={cityProperties}
+              />
+            ))}
+          </div>
+          <div className="lg:col-span-1">
+            {/* Desktop-only map - sticky sidebar on the right. */}
+            <MapPanel desktopOnly />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}===== C:\Users\snoop\airbnb\bhookme-dashboard\src\pages\SearchResultsPage.jsx 
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import MockMap, { pick, priceOf, imageOf } from '../components/MapPanel';
+
+const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_BASE_URL = `${API_ORIGIN}/api`;
+
+const NO_RESULTS = [];
+
+function nightsBetween(checkIn, checkOut) {
+  if (!checkIn || !checkOut) return 0;
+  const [y1, m1, d1] = checkIn.split('-').map(Number);
+  const [y2, m2, d2] = checkOut.split('-').map(Number);
+  const diff = Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+  return diff > 0 ? diff : 0;
+}
+
+function shortDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function money(n) {
+  return `$${Math.round(n).toLocaleString()}`;
+}
+
+function ResultCard({ listing, nights, query }) {
+  const title = pick(listing, ['title', 'name']) || 'Listing';
+  const place = [pick(listing, ['city']), pick(listing, ['state', 'country'])].filter(Boolean).join(', ');
+  const img = imageOf(listing);
+  const price = priceOf(listing);
+
+  return (
+    <Link to={`/property/${listing.id}${query ? `?${query}` : ''}`} className="group block">
+      <div className="aspect-square rounded-xl overflow-hidden bg-gray-200">
+        {img ? (
+          <img
+            src={img}
+            alt={title}
+            loading="lazy"
+            className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-4xl" aria-hidden="true">🏠</div>
+        )}
+      </div>
+      <div className="mt-3">
+        <p className="font-semibold truncate">{place || title}</p>
+        {place && <p className="text-sm text-gray-500 truncate">{title}</p>}
+        {price ? (
+          <p className="mt-1 text-sm">
+            <span className="font-semibold">{money(price)}</span> night
+            {nights > 0 && <span className="text-gray-500"> · {money(price * nights)} total</span>}
+          </p>
+        ) : (
+          <p className="mt-1 text-sm text-gray-500">See price</p>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+export default function SearchResultsPage() {
+  const { search } = useLocation();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
+  const location = params.get('location') || '';
+  const checkIn = params.get('checkIn') || '';
+  const checkOut = params.get('checkOut') || '';
+  const guests = Number(params.get('guests')) || 0;
+  const nights = nightsBetween(checkIn, checkOut);
+
+  // Passed on to the property page so it can pre-fill the same dates/guests.
+  const carryQuery = useMemo(() => {
+    const p = new URLSearchParams();
+    if (checkIn && checkOut) {
+      p.set('checkIn', checkIn);
+      p.set('checkOut', checkOut);
+    }
+    if (guests) p.set('guests', String(guests));
+    return p.toString();
+  }, [checkIn, checkOut, guests]);
+
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    fetch(`${API_BASE_URL}/properties/search?${params.toString()}`)
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error((data && data.message) || `Search failed (status ${res.status}).`);
+        return Array.isArray(data) ? data : [];
+      })
+      .then((data) => {
+        if (!cancelled) setResults(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || 'Search failed.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [params]);
+
+  const summary = [
+    location || 'Anywhere',
+    checkIn && checkOut ? `${shortDate(checkIn)} – ${shortDate(checkOut)}` : null,
+    guests ? `${guests} guest${guests === 1 ? '' : 's'}` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-6 grid lg:grid-cols-[minmax(0,1fr)_40%] gap-8">
+      <div>
+        <p className="text-sm text-gray-500 mb-1">{summary}</p>
+        <h1 className="text-2xl font-semibold mb-6">
+          {loading
+            ? 'Searching...'
+            : `${results.length} ${results.length === 1 ? 'home' : 'homes'}${location ? ` in ${location}` : ''}`}
+        </h1>
+
+        {error && <p className="text-red-500 mb-4">{error}</p>}
+
+        {!loading && !error && results.length === 0 && (
+          <div className="border border-gray-200 rounded-xl p-8 text-center bg-white">
+            <p className="font-semibold mb-1">No homes match this search</p>
+            <p className="text-gray-500 text-sm mb-4">
+              Try other dates, fewer guests, or a nearby city.
+            </p>
+            <Link to="/" className="inline-block text-sm font-semibold underline">
+              Back to all homes
+            </Link>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i}>
+                <div className="aspect-square rounded-xl bg-gray-200 animate-pulse" />
+                <div className="h-4 bg-gray-200 rounded mt-3 w-2/3 animate-pulse" />
+                <div className="h-4 bg-gray-200 rounded mt-2 w-1/3 animate-pulse" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {results.map((l) => (
+              <ResultCard key={l.id} listing={l} nights={nights} query={carryQuery} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <MockMap listings={loading ? NO_RESULTS : results} />
+    </div>
+  );
+}===== C:\Users\snoop\airbnb\bhookme-dashboard\src\components\SearchBar.jsx 
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { SERVICE_CATEGORIES, findServiceCategory } from '../data/serviceCategories';
+
+const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_BASE_URL = `${API_ORIGIN}/api`;
+
+// yyyy-mm-dd in the visitor's own time zone
+function localISO(date) {
+  const d = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(iso, days) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return localISO(new Date(y, m - 1, d + days));
+}
+
+function shortDate(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function Stepper({ label, hint, value, min, onChange }) {
+  return (
+    <div className="flex items-center justify-between py-4 border-b border-gray-100 last:border-b-0">
+      <div>
+        <p className="font-semibold text-sm">{label}</p>
+        <p className="text-xs text-gray-500">{hint}</p>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => onChange(Math.max(min, value - 1))}
+          disabled={value <= min}
+          aria-label={`Fewer ${label.toLowerCase()}`}
+          className="w-8 h-8 rounded-full border border-gray-300 text-gray-600 hover:border-gray-900 disabled:opacity-30 disabled:hover:border-gray-300"
+        >
+          −
+        </button>
+        <span className="w-5 text-center text-sm">{value}</span>
+        <button
+          type="button"
+          onClick={() => onChange(Math.min(16, value + 1))}
+          aria-label={`More ${label.toLowerCase()}`}
+          className="w-8 h-8 rounded-full border border-gray-300 text-gray-600 hover:border-gray-900"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function SearchBar() {
+  const navigate = useNavigate();
+  const routerLocation = useLocation();
+  const wrapperRef = useRef(null);
+  const whereInputRef = useRef(null);
+
+  const [where, setWhere] = useState('');
+  const [checkIn, setCheckIn] = useState('');
+  const [checkOut, setCheckOut] = useState('');
+  const [adults, setAdults] = useState(0);
+  const [children, setChildren] = useState(0);
+  const [serviceType, setServiceType] = useState('');
+  const [panel, setPanel] = useState(null); // 'where' | 'when' | 'who' | null  (desktop)
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [locations, setLocations] = useState([]);
+
+  const today = localISO(new Date());
+  const guests = adults + children;
+  // On the Services tab the third part of the bar becomes "Type of service".
+  const isServices = routerLocation.pathname.startsWith('/category/services');
+  // On the Experiences tab "When" is a single day (experiences are booked by time slot).
+  const isExperiences = routerLocation.pathname.startsWith('/category/experiences');
+  const serviceTypeLabel = findServiceCategory(serviceType)?.label || '';
+
+  // Keep the bar filled in with whatever is in the URL on the /search and Services pages.
+  useEffect(() => {
+    const path = routerLocation.pathname;
+    if (path !== '/search' && !path.startsWith('/category/services') && !path.startsWith('/category/experiences')) return;
+    const p = new URLSearchParams(routerLocation.search);
+    setServiceType(p.get('type') || '');
+    if (path.startsWith('/category/experiences')) {
+      setWhere(p.get('location') || '');
+      setCheckIn(p.get('date') || '');
+      setCheckOut('');
+      setAdults(Number(p.get('guests')) || 0);
+      setChildren(0);
+      return;
+    }
+    setWhere(p.get('location') || '');
+    setCheckIn(p.get('checkIn') || '');
+    setCheckOut(p.get('checkOut') || '');
+    setAdults(Number(p.get('adults')) || Number(p.get('guests')) || 0);
+    setChildren(Number(p.get('children')) || 0);
+  }, [routerLocation.pathname, routerLocation.search]);
+
+  // Cities that actually have listings, for suggestions.
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/properties/search/locations`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setLocations(Array.isArray(data) ? data : []))
+      .catch(() => setLocations([]));
+  }, []);
+
+  // Close the desktop dropdown on outside click or Escape.
+  useEffect(() => {
+    if (!panel) return;
+    const onDown = (e) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setPanel(null);
+    };
+    const onKey = (e) => e.key === 'Escape' && setPanel(null);
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [panel]);
+
+  // Lock page scroll while the mobile search sheet is open.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [mobileOpen]);
+
+  useEffect(() => {
+    if (panel === 'where') whereInputRef.current?.focus();
+  }, [panel]);
+
+  const suggestions = useMemo(() => {
+    const term = where.trim().toLowerCase();
+    const list = term ? locations.filter((l) => l.toLowerCase().includes(term)) : locations;
+    return list.slice(0, 6);
+  }, [where, locations]);
+
+  const setCheckInSafe = (value) => {
+    setCheckIn(value);
+    if (value && (!checkOut || checkOut <= value)) setCheckOut(addDays(value, 1));
+  };
+
+  const clearAll = () => {
+    setWhere('');
+    setCheckIn('');
+    setCheckOut('');
+    setAdults(0);
+    setChildren(0);
+    setServiceType('');
+  };
+
+  const submit = () => {
+    if (isExperiences) {
+      const ep = new URLSearchParams();
+      if (where.trim()) ep.set('location', where.trim());
+      if (checkIn) ep.set('date', checkIn);
+      if (guests > 0) ep.set('guests', String(guests));
+      const category = new URLSearchParams(routerLocation.search).get('category');
+      if (category) ep.set('category', category);
+      setPanel(null);
+      setMobileOpen(false);
+      const qs = ep.toString();
+      navigate(`/category/experiences${qs ? `?${qs}` : ''}`);
+      return;
+    }
+    if (isServices) {
+      // Partner services (like IT) open their own website right from the click,
+      // so the browser doesn't treat it as an unwanted pop-up.
+      const picked = findServiceCategory(serviceType);
+      if (picked?.external) {
+        window.open(picked.external, '_blank', 'noopener,noreferrer');
+        setPanel(null);
+        setMobileOpen(false);
+        return;
+      }
+      const sp = new URLSearchParams();
+      if (where.trim()) sp.set('location', where.trim());
+      if (checkIn && checkOut) {
+        sp.set('checkIn', checkIn);
+        sp.set('checkOut', checkOut);
+      }
+      if (serviceType) sp.set('type', serviceType);
+      setPanel(null);
+      setMobileOpen(false);
+      const qs = sp.toString();
+      navigate(`/category/services${qs ? `?${qs}` : ''}`);
+      return;
+    }
+    const p = new URLSearchParams();
+    if (where.trim()) p.set('location', where.trim());
+    if (checkIn && checkOut) {
+      p.set('checkIn', checkIn);
+      p.set('checkOut', checkOut);
+    }
+    if (guests > 0) {
+      p.set('guests', String(guests));
+      p.set('adults', String(adults));
+      if (children > 0) p.set('children', String(children));
+    }
+    setPanel(null);
+    setMobileOpen(false);
+    navigate(`/search?${p.toString()}`);
+  };
+
+  const whereLabel = where.trim() || 'Anywhere';
+  const whenLabel = isExperiences
+    ? checkIn ? shortDate(checkIn) : 'Add dates'
+    : checkIn && checkOut
+      ? `${shortDate(checkIn)} – ${shortDate(checkOut)}`
+      : isServices ? 'Add dates' : 'Any week';
+  const whoLabel = isServices
+    ? serviceTypeLabel || 'Add service'
+    : guests > 0 ? `${guests} guest${guests === 1 ? '' : 's'}` : 'Add guests';
+  const whoTitle = isServices ? 'Type of service' : 'Who';
+  const whoIsEmpty = isServices ? !serviceType : guests === 0;
+
+  // ----- shared panel contents -----
+  const whereContent = (
+    <div>
+      <label className="block text-xs font-semibold mb-1" htmlFor="bh-where">Where</label>
+      <input
+        id="bh-where"
+        ref={whereInputRef}
+        value={where}
+        onChange={(e) => setWhere(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && submit()}
+        placeholder="Search destinations"
+        autoComplete="off"
+        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+      />
+      {suggestions.length > 0 && (
+        <ul className="mt-2">
+          {suggestions.map((s) => (
+            <li key={s}>
+              <button
+                type="button"
+                onClick={() => {
+                  setWhere(s);
+                  setPanel('when');
+                }}
+                className="w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-100 text-left text-sm"
+              >
+                <span className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center" aria-hidden="true">📍</span>
+                {s}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
+  const whenContent = isExperiences ? (
+    <label className="block">
+      <span className="block text-xs font-semibold mb-1">Date</span>
+      <input
+        type="date"
+        min={today}
+        value={checkIn}
+        onChange={(e) => setCheckIn(e.target.value)}
+        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+      />
+    </label>
+  ) : (
+    <div className="grid grid-cols-2 gap-3">
+      <label className="block">
+        <span className="block text-xs font-semibold mb-1">Check in</span>
+        <input
+          type="date"
+          min={today}
+          value={checkIn}
+          onChange={(e) => setCheckInSafe(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+        />
+      </label>
+      <label className="block">
+        <span className="block text-xs font-semibold mb-1">Check out</span>
+        <input
+          type="date"
+          min={checkIn ? addDays(checkIn, 1) : addDays(today, 1)}
+          value={checkOut}
+          onChange={(e) => setCheckOut(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+        />
+      </label>
+    </div>
+  );
+
+  const whoContent = (
+    <div>
+      <Stepper label="Adults" hint="Ages 13 or above" value={adults} min={children > 0 ? 1 : 0} onChange={setAdults} />
+      <Stepper
+        label="Children"
+        hint="Ages 2–12"
+        value={children}
+        min={0}
+        onChange={(v) => {
+          setChildren(v);
+          if (v > 0 && adults === 0) setAdults(1);
+        }}
+      />
+    </div>
+  );
+
+  const serviceContent = (
+    <ul className="grid grid-cols-2 gap-2">
+      {SERVICE_CATEGORIES.map((c) => (
+        <li key={c.id}>
+          <button
+            type="button"
+            onClick={() => setServiceType(serviceType === c.id ? '' : c.id)}
+            aria-pressed={serviceType === c.id}
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-left text-sm transition ${
+              serviceType === c.id ? 'border-gray-900 bg-gray-50 font-semibold' : 'border-gray-200 hover:border-gray-400'
+            }`}
+          >
+            <span aria-hidden="true">{c.icon}</span>
+            <span className="truncate">{c.label}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+
+  const thirdContent = isServices ? serviceContent : whoContent;
+
+  const segment = (id, title, value, extra = '') => (
+    <button
+      type="button"
+      onClick={() => setPanel(panel === id ? null : id)}
+      className={`text-left px-5 py-2 rounded-full transition ${extra} ${
+        panel === id ? 'bg-white shadow-md' : 'hover:bg-gray-100'
+      }`}
+    >
+      <span className="block text-xs font-semibold">{title}</span>
+      <span className={`block text-sm truncate ${value.muted ? 'text-gray-500' : 'text-gray-900'}`}>{value.text}</span>
+    </button>
+  );
+
+  return (
+    <>
+      {/* ---------- Desktop / tablet pill ---------- */}
+      <div ref={wrapperRef} className="hidden md:block relative w-full">
+        <div
+          className={`flex items-center border border-gray-300 rounded-full shadow-sm hover:shadow-md transition ${
+            panel ? 'bg-gray-100' : 'bg-white'
+          }`}
+        >
+          {segment('where', 'Where', { text: whereLabel, muted: !where.trim() }, 'flex-1 min-w-0')}
+          <span className="h-8 w-px bg-gray-300" />
+          {segment('when', 'When', { text: whenLabel, muted: isExperiences ? !checkIn : !(checkIn && checkOut) }, 'flex-1 min-w-0')}
+          <span className="h-8 w-px bg-gray-300" />
+          <div className="flex-1 min-w-0 flex items-center">
+            {segment('who', whoTitle, { text: whoLabel, muted: whoIsEmpty }, 'flex-1 min-w-0')}
+            <button
+              type="button"
+              onClick={submit}
+              aria-label="Search"
+              className="mr-2 shrink-0 bg-rose-500 hover:bg-rose-600 text-white rounded-full w-10 h-10 flex items-center justify-center transition"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {panel && (
+          <div
+            className={`absolute top-full mt-3 z-50 bg-white rounded-3xl shadow-xl border border-gray-200 p-5 w-[min(26rem,90vw)] ${
+              panel === 'where' ? 'left-0' : panel === 'when' ? 'left-1/2 -translate-x-1/2' : 'right-0'
+            }`}
+          >
+            {panel === 'where' && whereContent}
+            {panel === 'when' && (
+              <>
+                {whenContent}
+                <div className="flex justify-between mt-4">
+                  <button type="button" onClick={() => { setCheckIn(''); setCheckOut(''); }} className="text-sm underline">
+                    Clear dates
+                  </button>
+                  <button type="button" onClick={() => setPanel('who')} className="text-sm font-semibold bg-gray-900 text-white px-4 py-2 rounded-lg">
+                    Next
+                  </button>
+                </div>
+              </>
+            )}
+            {panel === 'who' && (
+              <>
+                {thirdContent}
+                <button
+                  type="button"
+                  onClick={submit}
+                  className="w-full mt-4 bg-rose-500 hover:bg-rose-600 text-white font-semibold py-3 rounded-xl transition"
+                >
+                  Search
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ---------- Mobile "Start your search" pill ---------- */}
+      <button
+        type="button"
+        onClick={() => setMobileOpen(true)}
+        className="md:hidden w-full flex items-center gap-3 border border-gray-300 rounded-full shadow-sm px-4 py-2.5 text-left"
+      >
+        <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold truncate">{where.trim() || 'Start your search'}</span>
+          <span className="block text-xs text-gray-500 truncate">
+            {whenLabel} · {whoLabel}
+          </span>
+        </span>
+      </button>
+
+      {/* ---------- Mobile full-screen search ---------- */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-[60] bg-gray-50 flex flex-col" role="dialog" aria-label="Search">
+          <div className="flex items-center justify-between px-4 py-3 bg-white border-b border-gray-200">
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              aria-label="Close search"
+              className="w-9 h-9 rounded-full border border-gray-300 flex items-center justify-center text-lg"
+            >
+              ×
+            </button>
+            <p className="font-semibold">{isServices ? 'Search services' : isExperiences ? 'Search experiences' : 'Search stays'}</p>
+            <span className="w-9" />
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <section className="bg-white rounded-2xl shadow-sm p-4">{whereContent}</section>
+            <section className="bg-white rounded-2xl shadow-sm p-4">
+              <p className="font-semibold mb-3">When</p>
+              {whenContent}
+            </section>
+            <section className="bg-white rounded-2xl shadow-sm p-4">
+              <p className={`font-semibold ${isServices ? 'mb-3' : ''}`}>{whoTitle}</p>
+              {thirdContent}
+            </section>
+          </div>
+
+          <div
+            className="flex items-center justify-between px-4 py-3 bg-white border-t border-gray-200"
+            style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}
+          >
+            <button type="button" onClick={clearAll} className="text-sm font-semibold underline">
+              Clear all
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              className="bg-rose-500 hover:bg-rose-600 text-white font-semibold px-6 py-3 rounded-xl transition"
+            >
+              Search
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}===== C:\Users\snoop\airbnb\bhookme-dashboard\src\components\ReviewSection.jsx 
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import InlineLoginPopup from './InlineLoginPopup';
+import PostLoginPrompt from './PostLoginPrompt';
+import { getPendingAction, clearPendingAction } from '../utils/pendingAction';
+import PhotoUploader from './PhotoUploader';
+import ReviewPhotos from './ReviewPhotos';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : 'http://localhost:8080/api';
+
+const REVIEWS_PER_PAGE = 2;
+
+function StarInput({ value, onChange }) {
+  return (
+    <div className="flex gap-1">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => onChange(n)}
+          className="text-2xl leading-none min-h-[36px] min-w-[36px] flex items-center justify-center"
+          aria-label={`${n} star${n > 1 ? 's' : ''}`}
+        >
+          <span className={n <= value ? 'text-yellow-400' : 'text-gray-300'}>★</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StarDisplay({ rating }) {
+  return (
+    <div className="flex gap-0.5 text-sm">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <span key={n} className={n <= rating ? 'text-yellow-400' : 'text-gray-300'}>★</span>
+      ))}
+    </div>
+  );
+}
+
+function ReviewerAvatar({ url, name }) {
+  const initial = (name || '?').trim().charAt(0).toUpperCase();
+  if (url) {
+    return <img src={url} alt={name || 'Reviewer'} className="w-10 h-10 rounded-full object-cover border border-gray-200 flex-shrink-0" />;
+  }
+  return (
+    <div className="w-10 h-10 rounded-full bg-gray-200 text-gray-500 flex items-center justify-center text-sm font-semibold flex-shrink-0">
+      {initial}
+    </div>
+  );
+}
+
+// Round photo picker for the reviewer's avatar (shown where the initial
+// letter would otherwise be). Uploads one image to /api/upload/image.
+function AvatarPicker({ value, onChange, name, token, onUploadingChange }) {
+  const inputRef = React.useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
+
+  const pick = async (file) => {
+    if (!file) return;
+    setError('');
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose an image.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Photo must be under 10MB.');
+      return;
+    }
+    setUploading(true);
+    onUploadingChange?.(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('folder', 'profiles');
+      const res = await fetch(`${API_BASE_URL}/upload/image`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.url) throw new Error((data && data.message) || 'Upload failed.');
+      onChange(data.url);
+    } catch (err) {
+      setError(err.message || 'Upload failed.');
+    } finally {
+      setUploading(false);
+      onUploadingChange?.(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading}
+        aria-label={value ? 'Change your photo' : 'Add your photo'}
+        className="relative w-14 h-14 rounded-full overflow-hidden bg-gray-200 text-gray-500 flex items-center justify-center text-lg font-semibold border border-gray-300 hover:opacity-90 shrink-0"
+      >
+        {value ? <img src={value} alt="Your photo" className="w-full h-full object-cover" /> : initial}
+        {uploading && (
+          <span className="absolute inset-0 bg-white/70 flex items-center justify-center text-xs text-gray-700">...</span>
+        )}
+      </button>
+      <div className="text-sm">
+        <button type="button" onClick={() => inputRef.current?.click()} disabled={uploading} className="font-medium text-gray-800 underline">
+          {uploading ? 'Uploading...' : value ? 'Change photo' : 'Add your photo'}
+        </button>
+        {value && !uploading && (
+          <button type="button" onClick={() => onChange(null)} className="ml-3 text-gray-500 underline">
+            Remove
+          </button>
+        )}
+        <p className="text-xs text-gray-400">Optional. Shown next to your name.</p>
+        {error && <p className="text-xs text-red-500">{error}</p>}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          pick(e.target.files?.[0]);
+          e.target.value = '';
+        }}
+      />
+    </div>
+  );
+}
+
+export default function ReviewSection({ propertyId, carId, showToast, onReviewCountChange }) {
+  const { user, token } = useAuth();
+  const [reviews, setReviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [hasReviewed, setHasReviewed] = useState(false);
+  const [justSubmitted, setJustSubmitted] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [showPostLoginPrompt, setShowPostLoginPrompt] = useState(false);
+
+  const [rating, setRating] = useState(5);
+  const [reviewerName, setReviewerName] = useState('');
+  const [title, setTitle] = useState('');
+  const [comment, setComment] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(null);
+  const [photos, setPhotos] = useState([]);
+  const [photosUploading, setPhotosUploading] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(reviews.length / REVIEWS_PER_PAGE));
+  const paginatedReviews = reviews.slice((currentPage - 1) * REVIEWS_PER_PAGE, currentPage * REVIEWS_PER_PAGE);
+
+  useEffect(() => setCurrentPage(1), [reviews.length, propertyId, carId]);
+
+  const listingEndpoint = propertyId
+    ? `${API_BASE_URL}/reviews/property/${propertyId}`
+    : `${API_BASE_URL}/reviews/car/${carId}`;
+
+  const fetchReviews = () => {
+    setLoading(true);
+    fetch(listingEndpoint)
+      .then((res) => res.json())
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        setReviews(list);
+        if (onReviewCountChange) onReviewCountChange(list.length);
+        setLoading(false);
+      })
+      .catch(() => {
+        setReviews([]);
+        setLoading(false);
+      });
+  };
+
+  const fetchMyReviewStatus = () => {
+    if (!token) return;
+    const params = propertyId ? `propertyId=${propertyId}` : `carId=${carId}`;
+    fetch(`${API_BASE_URL}/reviews/my-review?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => res.json())
+      .then((data) => setHasReviewed(!!data.hasReviewed))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetchReviews();
+    if (user) fetchMyReviewStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyId, carId, user]);
+
+  useEffect(() => {
+    if (user && !reviewerName) {
+      const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
+      if (fullName) setReviewerName(fullName);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Detect a pending Microsoft review that survived the MSAL redirect.
+  // MicrosoftSignInButton saved 'review' to sessionStorage before
+  // navigating away; this opens the review form once the user comes
+  // back and is authenticated.
+  useEffect(() => {
+    if (user && getPendingAction() === 'review') {
+      setShowPostLoginPrompt(true);
+    }
+  }, [user]);
+
+  const notify = (message, type = 'info') => {
+    if (showToast) showToast(message, type);
+  };
+
+  const resetForm = () => {
+    setTitle('');
+    setComment('');
+    setRating(5);
+    setAvatarUrl(null);
+    setPhotos([]);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!reviewerName.trim()) {
+      notify('Please enter your name', 'error');
+      return;
+    }
+    if (!comment.trim()) {
+      notify('Please write a comment for your review', 'error');
+      return;
+    }
+    if (photosUploading || avatarUploading) {
+      notify('Please wait for your photos to finish uploading', 'error');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/reviews`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          propertyId: propertyId || null,
+          carId: carId || null,
+          rating,
+          title,
+          comment,
+          reviewerDisplayName: reviewerName.trim(),
+          reviewerAvatarUrl: avatarUrl,
+        }),
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        // Attach any uploaded photos to the new review.
+        if (photos.length > 0 && data && data.id) {
+          try {
+            const photoRes = await fetch(`${API_BASE_URL}/reviews/${data.id}/photos`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ imageUrls: photos }),
+            });
+            if (!photoRes.ok) {
+              const photoData = await photoRes.json().catch(() => null);
+              notify((photoData && photoData.message) || 'Your review was saved, but the photos could not be attached.', 'error');
+            }
+          } catch {
+            notify('Your review was saved, but the photos could not be attached.', 'error');
+          }
+        }
+        // New reviews start as pending until the host publishes them.
+        notify('Thanks for your review! It will appear here once the host publishes it.', 'success');
+        setShowForm(false);
+        resetForm();
+        setHasReviewed(true);
+        setJustSubmitted(true);
+      } else {
+        notify(data.message || 'Failed to submit review', 'error');
+      }
+    } catch (err) {
+      notify('Network error while submitting review', 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const averageRating = reviews.length
+    ? (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)
+    : null;
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+        <div>
+          <h3 className="text-lg font-bold text-gray-800">
+            Reviews {reviews.length > 0 && `(${reviews.length})`}
+          </h3>
+          {averageRating && (
+            <div className="flex items-center gap-2 mt-1">
+              <StarDisplay rating={Math.round(averageRating)} />
+              <span className="text-sm text-gray-600">{averageRating} out of 5</span>
+            </div>
+          )}
+        </div>
+
+        {user && !hasReviewed && !showForm && (
+          <button
+            onClick={() => setShowForm(true)}
+            className="bg-rose-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-rose-600 min-h-[40px]"
+          >
+            Write a review
+          </button>
+        )}
+      </div>
+
+      {!user && (
+        <div className="mb-4">
+          <InlineLoginPopup
+            linkText="Log in to leave a review"
+            onLoginSuccess={() => setShowForm(true)}
+            pendingAction="review"
+          />
+        </div>
+      )}
+
+      {user && hasReviewed && !showForm && (
+        <p className="text-sm text-gray-500 mb-4">
+          {justSubmitted
+            ? 'Thanks for your review! It will appear here once the host publishes it.'
+            : "You've already reviewed this listing. Thanks for sharing your feedback!"}
+        </p>
+      )}
+
+      {showForm && (
+        <form onSubmit={handleSubmit} className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Rating</label>
+            <StarInput value={rating} onChange={setRating} />
+          </div>
+
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Your photo</label>
+            <AvatarPicker
+              value={avatarUrl}
+              onChange={setAvatarUrl}
+              name={reviewerName}
+              token={token}
+              onUploadingChange={setAvatarUploading}
+            />
+          </div>
+
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Your name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={reviewerName}
+              onChange={(e) => setReviewerName(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm min-h-[40px]"
+              placeholder="How should we show your name?"
+              required
+            />
+          </div>
+
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Title (optional)</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm min-h-[40px]"
+              placeholder="Summarize your stay"
+            />
+          </div>
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Comment</label>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              rows={4}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              placeholder="Tell others about your experience"
+              required
+            />
+          </div>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Photos (optional)</label>
+            <PhotoUploader
+              value={photos}
+              onChange={setPhotos}
+              folder="reviews"
+              max={6}
+              onUploadingChange={setPhotosUploading}
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={submitting || photosUploading || avatarUploading}
+              className="bg-rose-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-rose-600 min-h-[40px] disabled:opacity-50"
+            >
+              {photosUploading || avatarUploading ? 'Uploading photos...' : submitting ? 'Submitting...' : 'Submit review'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowForm(false); resetForm(); }}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 min-h-[40px]"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <p className="text-sm text-gray-500">Loading reviews...</p>
+      ) : reviews.length === 0 ? (
+        <p className="text-sm text-gray-500">No reviews yet. Be the first to review this listing!</p>
+      ) : (
+        <>
+          <div className="space-y-4">
+            {paginatedReviews.map((r) => (
+              <div key={r.id} className="border-b border-gray-200 pb-4">
+                <div className="flex items-start gap-3">
+                  <ReviewerAvatar url={r.reviewerAvatarUrl} name={r.reviewerDisplayName} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm text-gray-800">{r.reviewerDisplayName || 'Anonymous'}</span>
+                      <StarDisplay rating={r.rating} />
+                      {r.isVerifiedStay && (
+                        <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Verified stay</span>
+                      )}
+                    </div>
+                    {r.title && <p className="font-medium text-gray-800 mt-1">{r.title}</p>}
+                    <p className="text-sm text-gray-600 mt-1">{r.comment}</p>
+                    <ReviewPhotos urls={r.imageUrls || []} />
+                    <p className="text-xs text-gray-400 mt-1">{new Date(r.createdAt).toLocaleDateString()}</p>
+
+                    {r.hostReply && (
+                      <div className="mt-3 bg-gray-50 border-l-2 border-gray-300 rounded-r-lg px-3 py-2">
+                        <p className="text-xs font-semibold text-gray-700">
+                          Response from the host
+                          {r.hostRepliedAt && (
+                            <span className="font-normal text-gray-400"> · {new Date(r.hostRepliedAt).toLocaleDateString()}</span>
+                          )}
+                        </p>
+                        <p className="text-sm text-gray-600 mt-1 whitespace-pre-line">{r.hostReply}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-1.5 mt-4">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1.5 rounded text-sm min-h-[36px] border border-gray-300 text-gray-600 disabled:opacity-40"
+              >
+                ‹ Prev
+              </button>
+              {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+                <button
+                  key={pageNum}
+                  type="button"
+                  onClick={() => setCurrentPage(pageNum)}
+                  className={`px-3 py-1.5 rounded text-sm min-h-[36px] min-w-[36px] ${
+                    currentPage === pageNum ? 'bg-rose-500 text-white font-semibold' : 'border border-gray-300 text-gray-600'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1.5 rounded text-sm min-h-[36px] border border-gray-300 text-gray-600 disabled:opacity-40"
+              >
+                Next ›
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {showPostLoginPrompt && (
+        <PostLoginPrompt
+          actionLabel="Write a review"
+          onConfirm={() => {
+            setShowPostLoginPrompt(false);
+            clearPendingAction();
+            setShowForm(true);
+          }}
+          onDismiss={() => {
+            setShowPostLoginPrompt(false);
+            clearPendingAction();
+          }}
+        />
+      )}
+    </div>
+  );
+}===== C:\Users\snoop\airbnb\bhookme-dashboard\src\components\CarRentalRow.jsx 
+import React, { useEffect, useRef, useState } from 'react';
+import CarCard from './CarCard';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : 'http://localhost:8080/api';
+
+export default function CarRentalRow() {
+  const [cars, setCars] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/cars`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        setCars(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const scroll = (direction) => {
+    if (!scrollRef.current) return;
+    const amount = direction === 'left' ? -300 : 300;
+    scrollRef.current.scrollBy({ left: amount, behavior: 'smooth' });
+  };
+
+  // Renders nothing while loading or if there are no cars, so this
+  // stays invisible rather than showing an empty section.
+  if (loading || cars.length === 0) return null;
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 pt-3 pb-2 relative group/row">
+      <h2 className="text-sm font-semibold text-gray-700 mb-2">Cars for your trip</h2>
+
+      <button
+        onClick={() => scroll('left')}
+        aria-label="Scroll left"
+        className="hidden group-hover/row:flex absolute left-2 top-1/2 -translate-y-1/2 z-10 w-7 h-7 rounded-full bg-white shadow-md border border-gray-200 items-center justify-center hover:scale-105 transition"
+      >
+        ‹
+      </button>
+
+      <div
+        ref={scrollRef}
+        className="flex gap-3 overflow-x-auto scroll-smooth [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {cars.map((car) => (
+          <CarCard key={car.id} car={car} />
+        ))}
+      </div>
+
+      <button
+        onClick={() => scroll('right')}
+        aria-label="Scroll right"
+        className="hidden group-hover/row:flex absolute right-2 top-1/2 -translate-y-1/2 z-10 w-7 h-7 rounded-full bg-white shadow-md border border-gray-200 items-center justify-center hover:scale-105 transition"
+      >
+        ›
+      </button>
+    </div>
+  );
+}===== C:\Users\snoop\airbnb\bhookme-dashboard\src\components\PropertyRow.jsx 
+import React, { useRef } from 'react';
+import PropertyCard from './PropertyCard';
+import './PropertyRow.css';
+
+export default function PropertyRow({ title, properties }) {
+  const scrollRef = useRef(null);
+
+  if (!properties || properties.length === 0) return null;
+
+  const scroll = (direction) => {
+    if (scrollRef.current) {
+      const cardWidth = scrollRef.current.firstChild?.offsetWidth || 250;
+      scrollRef.current.scrollBy({ left: direction * (cardWidth + 24) * 2, behavior: 'smooth' });
+    }
+  };
+
+  return (
+    <div className="property-row-section">
+      <h2 className="property-row-title">{title}</h2>
+      <div className="property-row-wrapper">
+        <button className="property-row-arrow property-row-arrow-left" onClick={() => scroll(-1)} aria-label="Scroll left">
+          ‹
+        </button>
+        <div className="property-row-scroll" ref={scrollRef}>
+          {properties.map((property) => (
+            <div className="property-row-item" key={property.id}>
+              <PropertyCard property={property} />
+            </div>
+          ))}
+        </div>
+        <button className="property-row-arrow property-row-arrow-right" onClick={() => scroll(1)} aria-label="Scroll right">
+          ›
+        </button>
+      </div>
+    </div>
+  );
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\controller\PropertySearchController.java 
+package bhookme_backend.controller;
+
+import org.springframework.dao.DataAccessException;
+import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+
+import java.sql.Date;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.util.*;
+import java.util.regex.Pattern;
+
+// Public search for the header search bar on bhookme-dashboard.
+//   GET /api/properties/search?location=Houston, TX&checkIn=2026-10-10&checkOut=2026-10-13&guests=3
+//   GET /api/properties/search/locations   -> ["Conroe, TX", "Houston, TX", ...]
+//   GET /api/properties/search/cars?location=Houston&checkIn=2026-10-10&checkOut=2026-10-13
+//       -> rentable cars (car_rentals) for the Services page, first photo attached as image
+//   GET /api/properties/search/all?q=toyota houston
+//       -> Explore page: homes, cars, experiences and places matching every word
+@RestController
+@RequestMapping("/api/properties/search")
+public class PropertySearchController {
+
+    private final JdbcTemplate jdbc;
+
+    // Columns that describe where a property is (matched by name, whatever the exact column is called).
+    private static final Pattern LOCATION_KEY =
+        Pattern.compile("(?i).*(city|state|country|address|zip|postal|neighbo(u)?rhood|region|county|location).*");
+    // Column that holds how many guests a property fits.
+    private static final Pattern CAPACITY_KEY =
+        Pattern.compile("(?i).*(max_guest|guest|accommodat|capacity|sleeps).*");
+
+    public PropertySearchController(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    @GetMapping
+    public ResponseEntity<?> search(@RequestParam(required = false) String location,
+                                    @RequestParam(required = false) String checkIn,
+                                    @RequestParam(required = false) String checkOut,
+                                    @RequestParam(required = false) Integer guests) {
+        try {
+            LocalDate in = parseDate(checkIn);
+            LocalDate out = parseDate(checkOut);
+            if (in != null && out != null && !out.isAfter(in)) {
+                throw new RuntimeException("Check-out must be after check-in.");
+            }
+
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT p.* FROM properties p WHERE p.status = 'ACTIVE' ORDER BY p.id DESC");
+
+            Set<String> booked = (in != null && out != null) ? bookedPropertyIds(in, out) : Collections.emptySet();
+            List<String> tokens = locationTokens(location);
+
+            List<Map<String, Object>> results = new ArrayList<>();
+            for (Map<String, Object> row : rows) {
+                if (booked.contains(String.valueOf(row.get("id")))) continue;
+                if (guests != null && guests > 0) {
+                    Integer capacity = capacityOf(row);
+                    if (capacity != null && capacity < guests) continue;
+                }
+                if (!tokens.isEmpty() && !matchesLocation(row, tokens)) continue;
+                results.add(row);
+            }
+
+            attachFirstImages(results);
+            return ResponseEntity.ok(results);
+        } catch (DateTimeParseException e) {
+            return error("Dates must look like 2026-10-01.");
+        } catch (RuntimeException e) {
+            return error(rootMessage(e));
+        }
+    }
+
+    @GetMapping("/locations")
+    public ResponseEntity<?> locations() {
+        try {
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT p.* FROM properties p WHERE p.status = 'ACTIVE'");
+            TreeSet<String> labels = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+            for (Map<String, Object> row : rows) {
+                String city = text(row.get("city"));
+                if (city == null) continue;
+                String state = firstText(row, "state", "state_code", "region", "country");
+                labels.add(state != null ? city + ", " + state : city);
+            }
+            return ResponseEntity.ok(new ArrayList<>(labels));
+        } catch (RuntimeException e) {
+            return error(rootMessage(e));
+        }
+    }
+
+    @GetMapping("/cars")
+    public ResponseEntity<?> cars(@RequestParam(required = false) String location,
+                                  @RequestParam(required = false) String checkIn,
+                                  @RequestParam(required = false) String checkOut) {
+        try {
+            LocalDate in = parseDate(checkIn);
+            LocalDate out = parseDate(checkOut);
+            if (in != null && out != null && !out.isAfter(in)) {
+                throw new RuntimeException("Return date must be after pick-up date.");
+            }
+
+            List<String> carColumns = columnsOf("car_rentals");
+            String where = carColumns.contains("status")
+                ? " WHERE c.status IS NULL OR UPPER(c.status) NOT IN " +
+                  "('INACTIVE','DELETED','REJECTED','PENDING','SUSPENDED','DRAFT','ARCHIVED','DISABLED')"
+                : "";
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT c.* FROM car_rentals c" + where + " ORDER BY c.id DESC");
+
+            Set<String> booked = (in != null && out != null) ? bookedCarIds(in, out) : Collections.emptySet();
+            List<String> tokens = locationTokens(location);
+
+            List<Map<String, Object>> results = new ArrayList<>();
+            for (Map<String, Object> row : rows) {
+                if (booked.contains(String.valueOf(row.get("id")))) continue;
+                if (!tokens.isEmpty() && !matchesLocation(row, tokens)) continue;
+                results.add(row);
+            }
+
+            attachFirstCarImages(results);
+            return ResponseEntity.ok(results);
+        } catch (DateTimeParseException e) {
+            return error("Dates must look like 2026-10-01.");
+        } catch (RuntimeException e) {
+            return error(rootMessage(e));
+        }
+    }
+
+    // Explore page: one search box across the whole app. Every word in q must
+    // match the item somewhere (so "toyota houston" = Toyotas in Houston).
+    // Items whose title/name contains the words rank first.
+    private static final int EXPLORE_LIMIT = 24;
+
+    @GetMapping("/all")
+    public ResponseEntity<?> searchAll(@RequestParam(required = false) String q) {
+        try {
+            List<String> words = new ArrayList<>();
+            if (q != null) {
+                for (String w : q.toLowerCase().split("[\\s,]+")) {
+                    if (!w.isBlank()) words.add(w.trim());
+                }
+            }
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("query", q == null ? "" : q.trim());
+            if (words.isEmpty()) {
+                result.put("homes", List.of());
+                result.put("cars", List.of());
+                result.put("experiences", List.of());
+                result.put("places", List.of());
+                result.put("counts", Map.of("homes", 0, "cars", 0, "experiences", 0, "places", 0));
+                return ResponseEntity.ok(result);
+            }
+
+            // Homes
+            List<Map<String, Object>> homes = rank(
+                    jdbc.queryForList("SELECT p.* FROM properties p WHERE p.status = 'ACTIVE'"),
+                    words, new String[] {"title"},
+                    new String[] {"title", "description", "city", "state", "property_type", "category", "zip_code"});
+            int homeCount = homes.size();
+            homes = new ArrayList<>(homes.subList(0, Math.min(EXPLORE_LIMIT, homes.size())));
+            attachFirstImages(homes);
+
+            // Cars
+            List<Map<String, Object>> cars = rank(
+                    jdbc.queryForList("SELECT c.* FROM car_rentals c WHERE c.status IS NULL OR c.status = 'ACTIVE'"),
+                    words, new String[] {"make", "model"},
+                    new String[] {"make", "model", "category", "city", "state", "year"});
+            int carCount = cars.size();
+            cars = new ArrayList<>(cars.subList(0, Math.min(EXPLORE_LIMIT, cars.size())));
+            attachFirstCarImages(cars);
+
+            // Experiences (skipped quietly if the table isn't there yet)
+            List<Map<String, Object>> experiences = new ArrayList<>();
+            try {
+                experiences = rank(
+                        jdbc.queryForList(
+                                "SELECT e.*, (SELECT ei.image_url FROM experience_images ei WHERE ei.experience_id = e.id " +
+                                "ORDER BY ei.display_order, ei.id LIMIT 1) AS cover_image " +
+                                "FROM experiences e WHERE e.status = 'ACTIVE'"),
+                        words, new String[] {"title"},
+                        new String[] {"title", "category", "city", "state", "description", "what_you_will_do"});
+            } catch (DataAccessException ignored) {
+                // experiences tables not created yet
+            }
+            int experienceCount = experiences.size();
+            experiences = new ArrayList<>(experiences.subList(0, Math.min(EXPLORE_LIMIT, experiences.size())));
+
+            // Places: distinct "City, State" across homes and cars.
+            java.util.TreeMap<String, Integer> placeCounts = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            List<Map<String, Object>> allPlaces = new ArrayList<>();
+            allPlaces.addAll(jdbc.queryForList("SELECT city, state FROM properties WHERE status = 'ACTIVE'"));
+            allPlaces.addAll(jdbc.queryForList("SELECT city, state FROM car_rentals WHERE status IS NULL OR status = 'ACTIVE'"));
+            for (Map<String, Object> row : allPlaces) {
+                String city = text(row.get("city"));
+                if (city == null) continue;
+                String state = text(row.get("state"));
+                String label = state != null ? city + ", " + state : city;
+                String hay = label.toLowerCase();
+                boolean all = true;
+                for (String w : words) {
+                    if (!hay.contains(w)) { all = false; break; }
+                }
+                if (all) placeCounts.merge(label, 1, Integer::sum);
+            }
+            List<Map<String, Object>> places = new ArrayList<>();
+            for (Map.Entry<String, Integer> e : placeCounts.entrySet()) {
+                Map<String, Object> place = new HashMap<>();
+                place.put("label", e.getKey());
+                place.put("listings", e.getValue());
+                places.add(place);
+            }
+
+            Map<String, Object> counts = new HashMap<>();
+            counts.put("homes", homeCount);
+            counts.put("cars", carCount);
+            counts.put("experiences", experienceCount);
+            counts.put("places", places.size());
+
+            result.put("homes", homes);
+            result.put("cars", cars);
+            result.put("experiences", experiences);
+            result.put("places", places);
+            result.put("counts", counts);
+            return ResponseEntity.ok(result);
+        } catch (RuntimeException e) {
+            return error(rootMessage(e));
+        }
+    }
+
+    // Keeps rows where every word appears in at least one of searchKeys,
+    // ranked by how many words appear in the titleKeys.
+    private List<Map<String, Object>> rank(List<Map<String, Object>> rows, List<String> words,
+                                           String[] titleKeys, String[] searchKeys) {
+        List<Map<String, Object>> matched = new ArrayList<>();
+        Map<Map<String, Object>, Integer> scores = new java.util.IdentityHashMap<>();
+        for (Map<String, Object> row : rows) {
+            String hay = joinValues(row, searchKeys);
+            boolean all = true;
+            for (String w : words) {
+                if (!hay.contains(w)) { all = false; break; }
+            }
+            if (!all) continue;
+            String title = joinValues(row, titleKeys);
+            int score = 0;
+            for (String w : words) {
+                if (title.contains(w)) score++;
+            }
+            scores.put(row, score);
+            matched.add(row);
+        }
+        matched.sort((a, b) -> Integer.compare(scores.get(b), scores.get(a)));
+        return matched;
+    }
+
+    private String joinValues(Map<String, Object> row, String[] keys) {
+        StringBuilder sb = new StringBuilder();
+        for (String k : keys) {
+            Object v = row.get(k);
+            if (v != null) sb.append(' ').append(v.toString().toLowerCase());
+        }
+        return sb.toString();
+    }
+
+    // ---------- helpers ----------
+
+    private List<String> columnsOf(String table) {
+        List<String> cols = jdbc.queryForList(
+            "SELECT column_name FROM information_schema.columns " +
+            "WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
+            String.class, table);
+        List<String> lower = new ArrayList<>();
+        for (String c : cols) lower.add(c.toLowerCase());
+        return lower;
+    }
+
+    private Set<String> bookedCarIds(LocalDate in, LocalDate out) {
+        String overlap = "SELECT DISTINCT car_id FROM car_bookings WHERE start_date < ? AND end_date > ?";
+        List<Long> ids;
+        try {
+            ids = jdbc.queryForList(overlap +
+                " AND UPPER(status) NOT IN ('CANCELLED','CANCELED','REJECTED','REFUNDED','DECLINED','EXPIRED')",
+                Long.class, Date.valueOf(out), Date.valueOf(in));
+        } catch (DataAccessException e) {
+            ids = jdbc.queryForList(overlap, Long.class, Date.valueOf(out), Date.valueOf(in));
+        }
+        Set<String> set = new HashSet<>();
+        for (Long id : ids) set.add(String.valueOf(id));
+        return set;
+    }
+
+    // Finds the car photos table (e.g. car_images / car_rental_images / car_photos)
+    // and attaches each car's first photo. Does nothing if there is no such table.
+    private void attachFirstCarImages(List<Map<String, Object>> cars) {
+        if (cars.isEmpty()) return;
+        List<String> tables = jdbc.queryForList(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() " +
+            "AND (table_name LIKE '%car%image%' OR table_name LIKE '%car%photo%') ORDER BY table_name",
+            String.class);
+        if (tables.isEmpty()) return;
+
+        String table = tables.get(0);
+        List<String> cols = columnsOf(table);
+        String fk = null;
+        for (String candidate : new String[] {"car_id", "car_rental_id", "car_rentals_id", "rental_id"}) {
+            if (cols.contains(candidate)) { fk = candidate; break; }
+        }
+        if (fk == null) return;
+        String order = cols.contains("display_order") ? "display_order"
+                     : cols.contains("sort_order") ? "sort_order"
+                     : cols.contains("position") ? "position" : "id";
+
+        Map<String, Map<String, Object>> first = new HashMap<>();
+        for (Map<String, Object> img : jdbc.queryForList(
+                "SELECT * FROM `" + table + "` ORDER BY `" + fk + "`, `" + order + "`")) {
+            first.putIfAbsent(String.valueOf(img.get(fk)), img);
+        }
+        for (Map<String, Object> car : cars) {
+            Map<String, Object> img = first.get(String.valueOf(car.get("id")));
+            if (img != null) car.put("image", img);
+        }
+    }
+
+    private Set<String> bookedPropertyIds(LocalDate in, LocalDate out) {
+        // A booking overlaps when it starts before our check-out and ends after our check-in.
+        String overlap = "SELECT DISTINCT property_id FROM bookings " +
+                         "WHERE check_in_date < ? AND check_out_date > ?";
+        List<Long> ids;
+        try {
+            ids = jdbc.queryForList(overlap +
+                " AND UPPER(status) NOT IN ('CANCELLED','CANCELED','REJECTED','REFUNDED','DECLINED','EXPIRED')",
+                Long.class, Date.valueOf(out), Date.valueOf(in));
+        } catch (DataAccessException e) {
+            // bookings has no status column: treat every booking as blocking.
+            ids = jdbc.queryForList(overlap, Long.class, Date.valueOf(out), Date.valueOf(in));
+        }
+        Set<String> set = new HashSet<>();
+        for (Long id : ids) set.add(String.valueOf(id));
+        return set;
+    }
+
+    private void attachFirstImages(List<Map<String, Object>> properties) {
+        if (properties.isEmpty()) return;
+        Map<String, Map<String, Object>> first = new HashMap<>();
+        for (Map<String, Object> img : jdbc.queryForList(
+                "SELECT * FROM property_images ORDER BY property_id, display_order")) {
+            first.putIfAbsent(String.valueOf(img.get("property_id")), img);
+        }
+        for (Map<String, Object> p : properties) {
+            p.put("image", first.get(String.valueOf(p.get("id"))));
+        }
+    }
+
+    // "Houston, TX" -> ["houston", "tx"]; every piece must match somewhere in the location columns.
+    private List<String> locationTokens(String location) {
+        List<String> tokens = new ArrayList<>();
+        if (location == null) return tokens;
+        for (String part : location.split(",")) {
+            String t = part.trim().toLowerCase();
+            if (!t.isEmpty()) tokens.add(t);
+        }
+        return tokens;
+    }
+
+    private boolean matchesLocation(Map<String, Object> row, List<String> tokens) {
+        StringBuilder hay = new StringBuilder();
+        for (Map.Entry<String, Object> e : row.entrySet()) {
+            if (e.getValue() != null && LOCATION_KEY.matcher(e.getKey()).matches()) {
+                hay.append(' ').append(e.getValue().toString().toLowerCase());
+            }
+        }
+        Object title = row.get("title");
+        if (title != null) hay.append(' ').append(title.toString().toLowerCase());
+        String haystack = hay.toString();
+        for (String t : tokens) {
+            if (!haystack.contains(t)) return false;
+        }
+        return true;
+    }
+
+    private Integer capacityOf(Map<String, Object> row) {
+        for (Map.Entry<String, Object> e : row.entrySet()) {
+            if (CAPACITY_KEY.matcher(e.getKey()).matches() && e.getValue() instanceof Number) {
+                return ((Number) e.getValue()).intValue();
+            }
+        }
+        return null;
+    }
+
+    private LocalDate parseDate(String value) {
+        if (value == null || value.isBlank()) return null;
+        return LocalDate.parse(value.trim());
+    }
+
+    private String text(Object value) {
+        if (value == null) return null;
+        String s = value.toString().trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private String firstText(Map<String, Object> row, String... keys) {
+        for (String k : keys) {
+            String v = text(row.get(k));
+            if (v != null) return v;
+        }
+        return null;
+    }
+
+    private String rootMessage(RuntimeException e) {
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        return root.getMessage() != null ? root.getMessage() : e.getMessage();
+    }
+
+    private ResponseEntity<?> error(String message) {
+        Map<String, String> body = new HashMap<>();
+        body.put("message", message);
+        return ResponseEntity.badRequest().body(body);
+    }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\model\Property.java 
+package bhookme_backend.model;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.HashSet;
+import java.util.Set;
+
+@Entity
+@Table(name = "properties")
+public class Property {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "host_user_id", nullable = false)
+    private User host;
+
+    @Column(nullable = false)
+    private String title;
+
+    @Column(columnDefinition = "TEXT")
+    private String description;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "property_type", nullable = false)
+    private PropertyType propertyType;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private PropertyCategory category = PropertyCategory.HOME;
+
+    @Column(name = "address_line1", nullable = false)
+    private String addressLine1;
+
+    @Column(name = "address_line2")
+    private String addressLine2;
+
+    @Column(nullable = false)
+    private String city;
+
+    @Column(nullable = false)
+    private String state;
+
+    @Column(name = "zip_code", nullable = false)
+    private String zipCode;
+
+    @Column(nullable = false)
+    private String country = "United States";
+
+    @Column(nullable = false, precision = 10, scale = 8)
+    private BigDecimal latitude;
+
+    @Column(nullable = false, precision = 11, scale = 8)
+    private BigDecimal longitude;
+
+    @Column(nullable = false)
+    private Integer bedrooms = 1;
+
+    @Column(nullable = false, precision = 3, scale = 1)
+    private BigDecimal bathrooms = BigDecimal.ONE;
+
+    @Column(name = "max_guests", nullable = false)
+    private Integer maxGuests = 1;
+
+    @Column(name = "base_price_per_night", nullable = false, precision = 10, scale = 2)
+    private BigDecimal basePricePerNight;
+
+    @Column(name = "cleaning_fee", nullable = false, precision = 10, scale = 2)
+    private BigDecimal cleaningFee = BigDecimal.ZERO;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private PropertyStatus status = PropertyStatus.DRAFT;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    @OneToMany(mappedBy = "property", cascade = CascadeType.ALL, orphanRemoval = true)
+    private Set<PropertyImage> images = new HashSet<>();
+
+    @ManyToMany
+    @JoinTable(
+        name = "property_amenities",
+        joinColumns = @JoinColumn(name = "property_id"),
+        inverseJoinColumns = @JoinColumn(name = "amenity_id")
+    )
+    private Set<Amenity> amenities = new HashSet<>();
+
+    public Property() {}
+
+    @PrePersist
+    protected void onCreate() {
+        createdAt = LocalDateTime.now();
+        updatedAt = LocalDateTime.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public User getHost() { return host; }
+    public void setHost(User host) { this.host = host; }
+
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
+
+    public String getDescription() { return description; }
+    public void setDescription(String description) { this.description = description; }
+
+    public PropertyType getPropertyType() { return propertyType; }
+    public void setPropertyType(PropertyType propertyType) { this.propertyType = propertyType; }
+
+    public PropertyCategory getCategory() { return category; }
+    public void setCategory(PropertyCategory category) { this.category = category; }
+
+    public String getAddressLine1() { return addressLine1; }
+    public void setAddressLine1(String addressLine1) { this.addressLine1 = addressLine1; }
+
+    public String getAddressLine2() { return addressLine2; }
+    public void setAddressLine2(String addressLine2) { this.addressLine2 = addressLine2; }
+
+    public String getCity() { return city; }
+    public void setCity(String city) { this.city = city; }
+
+    public String getState() { return state; }
+    public void setState(String state) { this.state = state; }
+
+    public String getZipCode() { return zipCode; }
+    public void setZipCode(String zipCode) { this.zipCode = zipCode; }
+
+    public String getCountry() { return country; }
+    public void setCountry(String country) { this.country = country; }
+
+    public BigDecimal getLatitude() { return latitude; }
+    public void setLatitude(BigDecimal latitude) { this.latitude = latitude; }
+
+    public BigDecimal getLongitude() { return longitude; }
+    public void setLongitude(BigDecimal longitude) { this.longitude = longitude; }
+
+    public Integer getBedrooms() { return bedrooms; }
+    public void setBedrooms(Integer bedrooms) { this.bedrooms = bedrooms; }
+
+    public BigDecimal getBathrooms() { return bathrooms; }
+    public void setBathrooms(BigDecimal bathrooms) { this.bathrooms = bathrooms; }
+
+    public Integer getMaxGuests() { return maxGuests; }
+    public void setMaxGuests(Integer maxGuests) { this.maxGuests = maxGuests; }
+
+    public BigDecimal getBasePricePerNight() { return basePricePerNight; }
+    public void setBasePricePerNight(BigDecimal basePricePerNight) { this.basePricePerNight = basePricePerNight; }
+
+    public BigDecimal getCleaningFee() { return cleaningFee; }
+    public void setCleaningFee(BigDecimal cleaningFee) { this.cleaningFee = cleaningFee; }
+
+    public PropertyStatus getStatus() { return status; }
+    public void setStatus(PropertyStatus status) { this.status = status; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+
+    public Set<PropertyImage> getImages() { return images; }
+    public void setImages(Set<PropertyImage> images) { this.images = images; }
+
+    public Set<Amenity> getAmenities() { return amenities; }
+    public void setAmenities(Set<Amenity> amenities) { this.amenities = amenities; }
+}
+===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\model\Car.java 
+package bhookme_backend.model;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "car_rentals")
+public class Car {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "host_user_id", nullable = false)
+    private User host;
+
+    @Column(nullable = false)
+    private String make;
+
+    @Column(nullable = false)
+    private String model;
+
+    @Column(nullable = false)
+    private Integer year;
+
+    @Column(nullable = false)
+    private String category;
+
+    @Column(nullable = false)
+    private String city;
+
+    @Column(nullable = false)
+    private String state;
+
+    @Column(name = "daily_rate", nullable = false)
+    private BigDecimal dailyRate;
+
+    @Column(name = "image_url", length = 500)
+    private String imageUrl;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private CarStatus status = CarStatus.ACTIVE;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    protected void onCreate() {
+        createdAt = LocalDateTime.now();
+    }
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public User getHost() { return host; }
+    public void setHost(User host) { this.host = host; }
+
+    public String getMake() { return make; }
+    public void setMake(String make) { this.make = make; }
+
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
+
+    public Integer getYear() { return year; }
+    public void setYear(Integer year) { this.year = year; }
+
+    public String getCategory() { return category; }
+    public void setCategory(String category) { this.category = category; }
+
+    public String getCity() { return city; }
+    public void setCity(String city) { this.city = city; }
+
+    public String getState() { return state; }
+    public void setState(String state) { this.state = state; }
+
+    public BigDecimal getDailyRate() { return dailyRate; }
+    public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+
+    public String getImageUrl() { return imageUrl; }
+    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+
+    public CarStatus getStatus() { return status; }
+    public void setStatus(CarStatus status) { this.status = status; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+}===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\repository\PropertyRepository.java 
+package bhookme_backend.repository;
+
+import bhookme_backend.model.Property;
+import bhookme_backend.model.PropertyCategory;
+import bhookme_backend.model.PropertyStatus;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.List;
+
+public interface PropertyRepository extends JpaRepository<Property, Long> {
+
+    List<Property> findByStatus(PropertyStatus status);
+
+    List<Property> findByCityAndStatus(String city, PropertyStatus status);
+
+    List<Property> findByHostId(Long hostId);
+
+    List<Property> findByCategoryAndStatus(PropertyCategory category, PropertyStatus status);
+
+    // ============================================================
+    // NEAREST PROPERTIES (Haversine formula, in miles)
+    // ------------------------------------------------------------
+    // Powers the homepage's first section: "properties closest to
+    // the searching user's location". Only considers ACTIVE
+    // properties.
+    // ============================================================
+    @Query(value =
+        "SELECT p.*, " +
+        "(3959 * ACOS(COS(RADIANS(:lat)) * COS(RADIANS(p.latitude)) * " +
+        "COS(RADIANS(p.longitude) - RADIANS(:lng)) + " +
+        "SIN(RADIANS(:lat)) * SIN(RADIANS(p.latitude)))) AS distance_miles " +
+        "FROM properties p " +
+        "WHERE p.status = 'ACTIVE' " +
+        "HAVING distance_miles IS NOT NULL " +
+        "ORDER BY distance_miles ASC",
+        countQuery = "SELECT COUNT(*) FROM properties WHERE status = 'ACTIVE'",
+        nativeQuery = true)
+    List<Property> findNearestActiveProperties(@Param("lat") double latitude,
+                                                @Param("lng") double longitude,
+                                                Pageable pageable);
+}
+===== C:\Users\snoop\airbnb\bhookme-backend\src\main\java\bhookme_backend\repository\CarRepository.java 
+package bhookme_backend.repository;
+
+import bhookme_backend.model.Car;
+import bhookme_backend.model.CarStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+
+public interface CarRepository extends JpaRepository<Car, Long> {
+    List<Car> findByStatus(CarStatus status);
+    List<Car> findByHost_Id(Long hostId);
+}

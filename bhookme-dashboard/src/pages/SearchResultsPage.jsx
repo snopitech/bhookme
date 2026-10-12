@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import MockMap, { pick, priceOf, imageOf } from '../components/MockMap';
+import MockMap, { pick, priceOf, imageOf } from '../components/MapPanel';
+import { withCoords, getVisitorLocation, sortByDistance, distanceLabel } from '../utils/geo';
 
 const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const API_BASE_URL = `${API_ORIGIN}/api`;
@@ -24,7 +25,7 @@ function money(n) {
   return `$${Math.round(n).toLocaleString()}`;
 }
 
-function ResultCard({ listing, nights, query }) {
+function ResultCard({ listing, nights, query, showDistance }) {
   const title = pick(listing, ['title', 'name']) || 'Listing';
   const place = [pick(listing, ['city']), pick(listing, ['state', 'country'])].filter(Boolean).join(', ');
   const img = imageOf(listing);
@@ -47,6 +48,9 @@ function ResultCard({ listing, nights, query }) {
       <div className="mt-3">
         <p className="font-semibold truncate">{place || title}</p>
         {place && <p className="text-sm text-gray-500 truncate">{title}</p>}
+        {showDistance && distanceLabel(listing.miles) && (
+          <p className="text-sm text-gray-500 truncate">📍 {distanceLabel(listing.miles)}</p>
+        )}
         {price ? (
           <p className="mt-1 text-sm">
             <span className="font-semibold">{money(price)}</span> night
@@ -64,6 +68,8 @@ export default function SearchResultsPage() {
   const { search } = useLocation();
   const params = useMemo(() => new URLSearchParams(search), [search]);
   const location = params.get('location') || '';
+  // Nearby: /search?near=1 - every home, nearest first (no distance limit).
+  const nearMode = params.get('near') === '1';
   const checkIn = params.get('checkIn') || '';
   const checkOut = params.get('checkOut') || '';
   const guests = Number(params.get('guests')) || 0;
@@ -83,12 +89,20 @@ export default function SearchResultsPage() {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // Results with a map position filled in (own position, or their city's center).
+  const [located, setLocated] = useState(null);
+  const [visitor, setVisitor] = useState(null);
+  const [nearStatus, setNearStatus] = useState('idle'); // idle | locating | ready | denied | unsupported
+  const [nearAttempt, setNearAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError('');
-    fetch(`${API_BASE_URL}/properties/search?${params.toString()}`)
+    // "near" is for this page only - the server gets the normal search.
+    const serverParams = new URLSearchParams(params);
+    serverParams.delete('near');
+    fetch(`${API_BASE_URL}/properties/search?${serverParams.toString()}`)
       .then(async (res) => {
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error((data && data.message) || `Search failed (status ${res.status}).`);
@@ -108,8 +122,47 @@ export default function SearchResultsPage() {
     };
   }, [params]);
 
+  // Fill in map positions so the map gets pins and Nearby can measure distance.
+  useEffect(() => {
+    let cancelled = false;
+    setLocated(null);
+    if (loading || results.length === 0) return undefined;
+    withCoords(results).then((list) => {
+      if (!cancelled) setLocated(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [results, loading]);
+
+  // Ask where the visitor is when Nearby is on.
+  useEffect(() => {
+    if (!nearMode) return undefined;
+    let cancelled = false;
+    setNearStatus('locating');
+    getVisitorLocation()
+      .then((pos) => {
+        if (cancelled) return;
+        setVisitor(pos);
+        setNearStatus('ready');
+      })
+      .catch((err) => {
+        if (!cancelled) setNearStatus(err.message === 'unsupported' ? 'unsupported' : 'denied');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [nearMode, nearAttempt]);
+
+  // What the page shows: nearest first in Nearby mode, otherwise as returned.
+  const shown = useMemo(() => {
+    const base = located || results;
+    if (nearMode && visitor) return sortByDistance(base, visitor);
+    return base;
+  }, [located, results, nearMode, visitor]);
+
   const summary = [
-    location || 'Anywhere',
+    nearMode ? 'Nearby' : location || 'Anywhere',
     checkIn && checkOut ? `${shortDate(checkIn)} – ${shortDate(checkOut)}` : null,
     guests ? `${guests} guest${guests === 1 ? '' : 's'}` : null,
   ]
@@ -123,8 +176,32 @@ export default function SearchResultsPage() {
         <h1 className="text-2xl font-semibold mb-6">
           {loading
             ? 'Searching...'
-            : `${results.length} ${results.length === 1 ? 'home' : 'homes'}${location ? ` in ${location}` : ''}`}
+            : nearMode
+              ? `${results.length} ${results.length === 1 ? 'home' : 'homes'} near you`
+              : `${results.length} ${results.length === 1 ? 'home' : 'homes'}${location ? ` in ${location}` : ''}`}
         </h1>
+
+        {nearMode && nearStatus === 'locating' && (
+          <p className="text-sm text-gray-500 -mt-4 mb-6">Finding your location...</p>
+        )}
+        {nearMode && nearStatus === 'ready' && results.length > 0 && (
+          <p className="text-sm text-gray-500 -mt-4 mb-6">Closest first, based on your location.</p>
+        )}
+        {nearMode && (nearStatus === 'denied' || nearStatus === 'unsupported') && (
+          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 mb-6 text-sm">
+            <p className="font-semibold">We couldn't get your location</p>
+            <p className="text-gray-600 mt-1">
+              Allow location for bhookme in your browser (the icon left of the web address), then try again. Showing all homes for now.
+            </p>
+            <button
+              type="button"
+              onClick={() => setNearAttempt((n) => n + 1)}
+              className="mt-3 px-4 py-2 rounded-full bg-rose-500 text-white font-semibold"
+            >
+              Try again
+            </button>
+          </div>
+        )}
 
         {error && <p className="text-red-500 mb-4">{error}</p>}
 
@@ -152,14 +229,20 @@ export default function SearchResultsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-            {results.map((l) => (
-              <ResultCard key={l.id} listing={l} nights={nights} query={carryQuery} />
+            {shown.map((l) => (
+              <ResultCard
+                key={l.id}
+                listing={l}
+                nights={nights}
+                query={carryQuery}
+                showDistance={nearMode && !!visitor}
+              />
             ))}
           </div>
         )}
       </div>
 
-      <MockMap listings={loading ? NO_RESULTS : results} />
+      <MockMap listings={loading ? NO_RESULTS : located || results} />
     </div>
   );
 }

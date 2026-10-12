@@ -133,7 +133,11 @@ function AvatarPicker({ value, onChange, name, token, onUploadingChange }) {
   );
 }
 
-export default function ReviewSection({ propertyId, carId, showToast, onReviewCountChange }) {
+// Used on house, car and monthly-lease pages. Pass exactly one of
+// propertyId, carId or leaseId. Lease reviews use their own endpoints
+// (/api/lease-reviews/...) and only tenants with a confirmed lease
+// can write one - the server tells us via canReview / reason.
+export default function ReviewSection({ propertyId, carId, leaseId, showToast, onReviewCountChange }) {
   const { user, token } = useAuth();
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -142,6 +146,8 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showPostLoginPrompt, setShowPostLoginPrompt] = useState(false);
+  const [canReview, setCanReview] = useState(true);
+  const [cantReviewReason, setCantReviewReason] = useState('');
 
   const [rating, setRating] = useState(5);
   const [reviewerName, setReviewerName] = useState('');
@@ -156,11 +162,16 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
   const totalPages = Math.max(1, Math.ceil(reviews.length / REVIEWS_PER_PAGE));
   const paginatedReviews = reviews.slice((currentPage - 1) * REVIEWS_PER_PAGE, currentPage * REVIEWS_PER_PAGE);
 
-  useEffect(() => setCurrentPage(1), [reviews.length, propertyId, carId]);
+  useEffect(() => setCurrentPage(1), [reviews.length, propertyId, carId, leaseId]);
+
+  const isLease = Boolean(leaseId);
+  const reviewsBase = isLease ? `${API_BASE_URL}/lease-reviews` : `${API_BASE_URL}/reviews`;
 
   const listingEndpoint = propertyId
     ? `${API_BASE_URL}/reviews/property/${propertyId}`
-    : `${API_BASE_URL}/reviews/car/${carId}`;
+    : carId
+      ? `${API_BASE_URL}/reviews/car/${carId}`
+      : `${API_BASE_URL}/lease-reviews/lease/${leaseId}`;
 
   const fetchReviews = () => {
     setLoading(true);
@@ -180,12 +191,17 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
 
   const fetchMyReviewStatus = () => {
     if (!token) return;
-    const params = propertyId ? `propertyId=${propertyId}` : `carId=${carId}`;
-    fetch(`${API_BASE_URL}/reviews/my-review?${params}`, {
+    const params = propertyId ? `propertyId=${propertyId}` : carId ? `carId=${carId}` : `leaseId=${leaseId}`;
+    fetch(`${reviewsBase}/my-review?${params}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
-      .then((data) => setHasReviewed(!!data.hasReviewed))
+      .then((data) => {
+        setHasReviewed(!!data.hasReviewed);
+        // House/car answers don't include canReview - anyone may review those.
+        setCanReview(data.canReview !== false || !!data.hasReviewed);
+        setCantReviewReason(data.reason || '');
+      })
       .catch(() => {});
   };
 
@@ -193,7 +209,7 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
     fetchReviews();
     if (user) fetchMyReviewStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propertyId, carId, user]);
+  }, [propertyId, carId, leaseId, user]);
 
   useEffect(() => {
     if (user && !reviewerName) {
@@ -242,7 +258,7 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
 
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/reviews`, {
+      const res = await fetch(reviewsBase, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -251,6 +267,7 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
         body: JSON.stringify({
           propertyId: propertyId || null,
           carId: carId || null,
+          leaseId: leaseId || null,
           rating,
           title,
           comment,
@@ -264,7 +281,7 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
         // Attach any uploaded photos to the new review.
         if (photos.length > 0 && data && data.id) {
           try {
-            const photoRes = await fetch(`${API_BASE_URL}/reviews/${data.id}/photos`, {
+            const photoRes = await fetch(`${reviewsBase}/${data.id}/photos`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -315,7 +332,7 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
           )}
         </div>
 
-        {user && !hasReviewed && !showForm && (
+        {user && !hasReviewed && canReview && !showForm && (
           <button
             onClick={() => setShowForm(true)}
             className="bg-rose-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-rose-600 min-h-[40px]"
@@ -333,6 +350,10 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
             pendingAction="review"
           />
         </div>
+      )}
+
+      {user && !hasReviewed && !canReview && cantReviewReason && (
+        <p className="text-sm text-gray-500 mb-4">{cantReviewReason}</p>
       )}
 
       {user && hasReviewed && !showForm && (
@@ -382,7 +403,7 @@ export default function ReviewSection({ propertyId, carId, showToast, onReviewCo
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               className="w-full border border-gray-300 rounded px-3 py-2 text-sm min-h-[40px]"
-              placeholder="Summarize your stay"
+              placeholder={isLease ? 'Summarize your time living here' : 'Summarize your stay'}
             />
           </div>
           <div className="mb-3">

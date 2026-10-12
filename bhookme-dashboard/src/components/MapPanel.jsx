@@ -4,13 +4,32 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
+// ============================================================
+// MAP PANEL
+// ------------------------------------------------------------
+// Renders the listings map. Two placements:
+//
+//  - mobileOnly   → inline panel, small (h-56), shown only on
+//                   screens < 1024px. Renders nothing on desktop
+//                   and doesn't fetch, listen, or mount.
+//  - desktopOnly  → sticky sidebar (unchanged from before), shown
+//                   only on screens >= 1024px. Renders nothing on
+//                   mobile and doesn't fetch, listen, or mount.
+//
+// HomePage mounts BOTH. Only one is ever live at a time based on
+// the current viewport width, so there's no double-fetch, no
+// double-listener, and no confusion about which instance owns
+// window.__bhookmeMapMounted.
+//
+// Default (no prop): the old behavior - desktop sidebar + mobile
+// popup - kept so other pages (e.g. SearchResultsPage) can still
+// use it if they want.
+// ============================================================
+
 const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const API_BASE_URL = `${API_ORIGIN}/api`;
 
-// Where a listing opens when its map card is clicked.
-// Change this if your listing detail route is different.
 const listingPath = (id) => `/property/${id}`;
-
 const US_CENTER = [39.8, -98.6];
 
 export function pick(row, keys) {
@@ -26,9 +45,6 @@ function positiveNumber(value) {
   return Number.isFinite(num) && num > 0 ? num : null;
 }
 
-// Finds the nightly price whatever the column is called.
-// Known names first, then any column mentioning night/price/rate,
-// skipping fees, deposits, taxes and weekly/monthly rates.
 const EXCLUDED_PRICE_WORDS = /fee|deposit|clean|tax|week|month|discount|service/i;
 
 export function priceOf(row) {
@@ -62,7 +78,6 @@ function pinIcon(label, selected) {
   });
 }
 
-// Zooms the map to fit every listing once they load.
 function FitToListings({ points }) {
   const map = useMap();
   useEffect(() => {
@@ -99,7 +114,6 @@ const MAP_STYLES = `
   @media (prefers-reduced-motion: reduce) { .bh-pin { transition: none; } }
 `;
 
-// true on screens 1024px and wider (Tailwind's lg breakpoint)
 function useIsDesktop() {
   const query = '(min-width: 1024px)';
   const [isDesktop, setIsDesktop] = useState(
@@ -114,13 +128,10 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-// The header's Map button and the map talk through these window events,
-// so the button can live in the header without any shared state.
 const OPEN_EVENT = 'bhookme:open-map';
+const CLOSE_EVENT = 'bhookme:close-map';
 const AVAILABLE_EVENT = 'bhookme:map-available';
 
-// Mobile-only "Map" button for the header. It only shows on pages
-// that actually have the map on them.
 export function MapButton({ className = '' }) {
   const [available, setAvailable] = useState(
     () => typeof window !== 'undefined' && !!window.__bhookmeMapMounted
@@ -215,16 +226,23 @@ function MapView({ mapped, points, loading, error }) {
   );
 }
 
-// Pass `listings` to show a specific set (e.g. search results);
-// leave it out to show every active listing.
-export default function MockMap({ listings: providedListings }) {
+export default function MapPanel({
+  listings: providedListings,
+  mobileOnly = false,
+  desktopOnly = false,
+}) {
   const isDesktop = useIsDesktop();
   const [listings, setListings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Gate: if this instance is for one breakpoint only, skip the
+  // other breakpoint entirely - no fetch, no listeners, no mount flag.
+  const active = mobileOnly ? !isDesktop : desktopOnly ? isDesktop : true;
+
   useEffect(() => {
+    if (!active) return undefined;
     if (providedListings) {
       setLoading(false);
       return undefined;
@@ -248,38 +266,27 @@ export default function MockMap({ listings: providedListings }) {
     return () => {
       cancelled = true;
     };
-  }, [providedListings]);
+  }, [providedListings, active]);
 
-  // Tell the header's Map button this page has a map, and listen for taps on it.
   useEffect(() => {
+    if (!active) return undefined;
     window.__bhookmeMapMounted = true;
     window.dispatchEvent(new CustomEvent(AVAILABLE_EVENT, { detail: true }));
-    const onOpen = () => setMobileOpen(true);
+    const onOpen = () => setMobileOpen((v) => !v);
+    const onClose = () => setMobileOpen(false);
     window.addEventListener(OPEN_EVENT, onOpen);
+    window.addEventListener(CLOSE_EVENT, onClose);
     return () => {
       window.__bhookmeMapMounted = false;
       window.dispatchEvent(new CustomEvent(AVAILABLE_EVENT, { detail: false }));
       window.removeEventListener(OPEN_EVENT, onOpen);
+      window.removeEventListener(CLOSE_EVENT, onClose);
     };
-  }, []);
+  }, [active]);
 
-  // Close the full-screen map if the screen grows to desktop size.
   useEffect(() => {
     if (isDesktop) setMobileOpen(false);
   }, [isDesktop]);
-
-  // Stop the page behind the full-screen map from scrolling.
-  useEffect(() => {
-    if (!mobileOpen) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const onKey = (e) => e.key === 'Escape' && setMobileOpen(false);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.body.style.overflow = previous;
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [mobileOpen]);
 
   const mapped = useMemo(
     () =>
@@ -292,6 +299,10 @@ export default function MockMap({ listings: providedListings }) {
   const points = useMemo(() => mapped.map((l) => [l.lat, l.lng]), [mapped]);
   const mapProps = { mapped, points, loading, error };
 
+  // This instance doesn't apply to the current breakpoint - render nothing.
+  if (!active) return null;
+
+  // Desktop-only (or default) instance
   if (isDesktop) {
     return (
       <div className="sticky top-24 h-[calc(100vh-7rem)] w-full rounded-xl overflow-hidden bg-gray-100 border border-gray-200">
@@ -301,23 +312,22 @@ export default function MockMap({ listings: providedListings }) {
     );
   }
 
-  return (
-    <>
-      <style>{MAP_STYLES}</style>
+  // Mobile-only (or default) instance, closed → nothing.
+  if (!mobileOpen) return null;
 
-      {mobileOpen && (
-        <div className="fixed inset-0 z-[60] bg-gray-100" role="dialog" aria-label="Map of listings">
-          <MapView {...mapProps} />
-          <button
-            onClick={() => setMobileOpen(false)}
-            className="absolute left-1/2 -translate-x-1/2 bottom-8 z-[1000] flex items-center gap-2 bg-gray-900 text-white text-sm font-semibold px-5 py-3 rounded-full shadow-lg active:scale-95 transition"
-            style={{ marginBottom: 'env(safe-area-inset-bottom, 0px)' }}
-          >
-            Show list
-            <span aria-hidden="true">☰</span>
-          </button>
-        </div>
-      )}
-    </>
+  // Mobile-only (or default) instance, open → inline panel.
+  return (
+    <div className="relative h-56 w-full rounded-xl overflow-hidden bg-gray-100 border border-gray-200">
+      <style>{MAP_STYLES}</style>
+      <MapView {...mapProps} />
+      <button
+        type="button"
+        onClick={() => setMobileOpen(false)}
+        className="absolute top-3 right-3 z-[1000] w-9 h-9 rounded-full bg-white shadow-md border border-gray-200 flex items-center justify-center text-lg font-semibold"
+        aria-label="Close map"
+      >
+        ×
+      </button>
+    </div>
   );
 }

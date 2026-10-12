@@ -60,6 +60,8 @@ export default function SearchBar() {
   const whereInputRef = useRef(null);
 
   const [where, setWhere] = useState('');
+  // "Nearby" picked in Where: search around the visitor's location.
+  const [nearby, setNearby] = useState(false);
   const [checkIn, setCheckIn] = useState('');
   const [checkOut, setCheckOut] = useState('');
   const [adults, setAdults] = useState(0);
@@ -76,6 +78,8 @@ export default function SearchBar() {
   // On the Experiences tab "When" is a single day (experiences are booked by time slot).
   const isExperiences = routerLocation.pathname.startsWith('/category/experiences');
   const serviceTypeLabel = findServiceCategory(serviceType)?.label || '';
+  // Nearby is for stays (homes), like Airbnb's "Nearby".
+  const nearbyAvailable = !isServices && !isExperiences;
 
   // Keep the bar filled in with whatever is in the URL on the /search and Services pages.
   useEffect(() => {
@@ -92,6 +96,7 @@ export default function SearchBar() {
       return;
     }
     setWhere(p.get('location') || '');
+    setNearby(path === '/search' && p.get('near') === '1');
     setCheckIn(p.get('checkIn') || '');
     setCheckOut(p.get('checkOut') || '');
     setAdults(Number(p.get('adults')) || Number(p.get('guests')) || 0);
@@ -148,6 +153,7 @@ export default function SearchBar() {
 
   const clearAll = () => {
     setWhere('');
+    setNearby(false);
     setCheckIn('');
     setCheckOut('');
     setAdults(0);
@@ -193,7 +199,8 @@ export default function SearchBar() {
       return;
     }
     const p = new URLSearchParams();
-    if (where.trim()) p.set('location', where.trim());
+    if (nearby && nearbyAvailable) p.set('near', '1');
+    else if (where.trim()) p.set('location', where.trim());
     if (checkIn && checkOut) {
       p.set('checkIn', checkIn);
       p.set('checkOut', checkOut);
@@ -208,7 +215,8 @@ export default function SearchBar() {
     navigate(`/search?${p.toString()}`);
   };
 
-  const whereLabel = where.trim() || 'Anywhere';
+  const showNearby = nearby && nearbyAvailable;
+  const whereLabel = showNearby ? 'Nearby' : where.trim() || 'Anywhere';
   const whenLabel = isExperiences
     ? checkIn ? shortDate(checkIn) : 'Add dates'
     : checkIn && checkOut
@@ -228,12 +236,34 @@ export default function SearchBar() {
         id="bh-where"
         ref={whereInputRef}
         value={where}
-        onChange={(e) => setWhere(e.target.value)}
+        onChange={(e) => {
+          setWhere(e.target.value);
+          setNearby(false);
+        }}
         onKeyDown={(e) => e.key === 'Enter' && submit()}
-        placeholder="Search destinations"
+        placeholder={showNearby ? 'Nearby' : 'Search destinations'}
         autoComplete="off"
         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
       />
+      {nearbyAvailable && !where.trim() && (
+        <button
+          type="button"
+          onClick={() => {
+            setNearby(true);
+            setWhere('');
+            setPanel('when');
+          }}
+          className={`mt-2 w-full flex items-center gap-3 px-2 py-2 rounded-lg text-left text-sm ${
+            showNearby ? 'bg-gray-100' : 'hover:bg-gray-100'
+          }`}
+        >
+          <span className="w-9 h-9 rounded-lg bg-rose-50 flex items-center justify-center" aria-hidden="true">🧭</span>
+          <span>
+            <span className="block font-semibold">Nearby</span>
+            <span className="block text-xs text-gray-500">Find what's around you</span>
+          </span>
+        </button>
+      )}
       {suggestions.length > 0 && (
         <ul className="mt-2">
           {suggestions.map((s) => (
@@ -242,6 +272,7 @@ export default function SearchBar() {
                 type="button"
                 onClick={() => {
                   setWhere(s);
+                  setNearby(false);
                   setPanel('when');
                 }}
                 className="w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-100 text-left text-sm"
@@ -352,7 +383,7 @@ export default function SearchBar() {
             panel ? 'bg-gray-100' : 'bg-white'
           }`}
         >
-          {segment('where', 'Where', { text: whereLabel, muted: !where.trim() }, 'flex-1 min-w-0')}
+          {segment('where', 'Where', { text: whereLabel, muted: !where.trim() && !showNearby }, 'flex-1 min-w-0')}
           <span className="h-8 w-px bg-gray-300" />
           {segment('when', 'When', { text: whenLabel, muted: isExperiences ? !checkIn : !(checkIn && checkOut) }, 'flex-1 min-w-0')}
           <span className="h-8 w-px bg-gray-300" />
@@ -419,7 +450,7 @@ export default function SearchBar() {
           <path d="m20 20-3.5-3.5" />
         </svg>
         <span className="min-w-0">
-          <span className="block text-sm font-semibold truncate">{where.trim() || 'Start your search'}</span>
+          <span className="block text-sm font-semibold truncate">{showNearby ? 'Nearby' : where.trim() || 'Start your search'}</span>
           <span className="block text-xs text-gray-500 truncate">
             {whenLabel} · {whoLabel}
           </span>

@@ -27,7 +27,11 @@ public class AdminAuthService {
     // Two-step login (password, then authenticator-app code).
     private static final long CHALLENGE_TTL_MS = 5 * 60 * 1000L; // 5 minutes to enter the code
     private static final int MAX_CODE_ATTEMPTS = 5;
-    private static final String TOTP_ISSUER = "bhookme";
+    // Each dashboard has its own authenticator entry and secret:
+    //   admin -> "admin.bhookme"   (admin.bhookme.com, localhost:5174)
+    //   hr    -> "hr.bhookme"      (hr.bhookme.com,    localhost:5175)
+    public static final String PORTAL_ADMIN = "admin";
+    public static final String PORTAL_HR = "hr";
 
     private final AdminRepository adminRepository;
     private final PasswordEncoder passwordEncoder;
@@ -42,12 +46,14 @@ public class AdminAuthService {
 
     private static class Challenge {
         final String email;
+        final String portal;
         final boolean setup;
         final long expiresAt;
         int attempts;
 
-        Challenge(String email, boolean setup) {
+        Challenge(String email, String portal, boolean setup) {
             this.email = email;
+            this.portal = portal;
             this.setup = setup;
             this.expiresAt = System.currentTimeMillis() + CHALLENGE_TTL_MS;
         }
@@ -67,14 +73,24 @@ public class AdminAuthService {
     //    {totpRequired: true, challengeId}            - app already set up
     //    {setupRequired: true, challengeId, secret, otpauthUrl} - first time: scan QR
     //  Step 2 (challengeId + code): returns the normal AdminAuthResponse with token.
-    public Object login(AdminLoginRequest request) {
+    //  `origin` is the browser's Origin header - it tells us which dashboard
+    //  (admin or HR) is signing in, so each gets its own authenticator entry.
+    public Object login(AdminLoginRequest request, String origin) {
         if (request.getChallengeId() != null && !request.getChallengeId().isBlank()) {
             return verifyCode(request.getChallengeId(), request.getCode());
         }
-        return checkPassword(request);
+        return checkPassword(request, portalFromOrigin(origin));
     }
 
-    private Map<String, Object> checkPassword(AdminLoginRequest request) {
+    // hr.bhookme.com or localhost:5175 -> HR; anything else -> admin.
+    public static String portalFromOrigin(String origin) {
+        if (origin == null) return PORTAL_ADMIN;
+        String o = origin.toLowerCase();
+        if (o.contains("://hr.") || o.endsWith(":5175")) return PORTAL_HR;
+        return PORTAL_ADMIN;
+    }
+
+    private Map<String, Object> checkPassword(AdminLoginRequest request, String portal) {
         if (request.getEmail() == null || request.getPassword() == null) {
             throw new RuntimeException("Invalid email or password");
         }
@@ -89,29 +105,33 @@ public class AdminAuthService {
         }
 
         cleanUpChallenges();
-        Map<String, Object> totp = totpRow(admin.getId());
-        boolean enabled = Boolean.TRUE.equals(asBool(totp.get("totp_enabled")));
-        String secret = (String) totp.get("totp_secret");
+        Map<String, Object> totp = totpRow(admin.getId(), portal);
+        boolean enabled = totp != null && Boolean.TRUE.equals(asBool(totp.get("enabled")));
+        String secret = totp == null ? null : (String) totp.get("secret");
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("email", admin.getEmail());
+        result.put("portal", portal);
 
         if (enabled && secret != null && !secret.isBlank()) {
             result.put("totpRequired", true);
-            result.put("challengeId", newChallenge(admin.getEmail(), false));
+            result.put("challengeId", newChallenge(admin.getEmail(), portal, false));
             return result;
         }
 
-        // First time (or after an HR reset): create a secret to scan. It only
-        // becomes active once the admin proves they scanned it by entering a code.
+        // First time on this dashboard (or after an HR reset): create a secret
+        // to scan. It only becomes active once a correct code is entered.
         if (secret == null || secret.isBlank()) {
             secret = totpService.generateSecret();
-            jdbc.update("UPDATE admins SET totp_secret = ?, totp_enabled = 0 WHERE id = ?", secret, admin.getId());
+            jdbc.update(
+                "INSERT INTO admin_totp (admin_id, portal, secret, enabled) VALUES (?, ?, ?, 0) " +
+                "ON DUPLICATE KEY UPDATE secret = VALUES(secret), enabled = 0",
+                admin.getId(), portal, secret);
         }
         result.put("setupRequired", true);
-        result.put("challengeId", newChallenge(admin.getEmail(), true));
+        result.put("challengeId", newChallenge(admin.getEmail(), portal, true));
         result.put("secret", secret);
-        result.put("otpauthUrl", otpauthUrl(admin.getEmail(), secret));
+        result.put("otpauthUrl", otpauthUrl(portal, admin.getEmail(), secret));
         return result;
     }
 
@@ -134,7 +154,8 @@ public class AdminAuthService {
             throw new RuntimeException("This account has been deactivated");
         }
 
-        String secret = (String) totpRow(admin.getId()).get("totp_secret");
+        Map<String, Object> totp = totpRow(admin.getId(), challenge.portal);
+        String secret = totp == null ? null : (String) totp.get("secret");
         if (secret == null || secret.isBlank() || !totpService.verifyTOTP(secret, code)) {
             challenge.attempts++;
             if (challenge.attempts >= MAX_CODE_ATTEMPTS) {
@@ -146,7 +167,8 @@ public class AdminAuthService {
 
         challenges.remove(challengeId);
         if (challenge.setup) {
-            jdbc.update("UPDATE admins SET totp_enabled = 1 WHERE id = ?", admin.getId());
+            jdbc.update("UPDATE admin_totp SET enabled = 1 WHERE admin_id = ? AND portal = ?",
+                    admin.getId(), challenge.portal);
         }
 
         String token = jwtUtil.generateToken(admin.getEmail());
@@ -210,9 +232,13 @@ public class AdminAuthService {
     // their authenticator app.
     public List<Map<String, Object>> getAllAccounts(String callerEmail) {
         requireHR(callerEmail);
+        // totpEnabled = set up on at least one dashboard (admin and/or HR).
         Map<Long, Boolean> enabledById = new HashMap<>();
-        for (Map<String, Object> row : jdbc.queryForList("SELECT id, totp_enabled FROM admins")) {
-            enabledById.put(((Number) row.get("id")).longValue(), Boolean.TRUE.equals(asBool(row.get("totp_enabled"))));
+        Map<Long, List<String>> portalsById = new HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList("SELECT admin_id, portal FROM admin_totp WHERE enabled = 1")) {
+            Long id = ((Number) row.get("admin_id")).longValue();
+            enabledById.put(id, true);
+            portalsById.computeIfAbsent(id, k -> new ArrayList<>()).add(String.valueOf(row.get("portal")));
         }
         List<Map<String, Object>> accounts = new ArrayList<>();
         adminRepository.findAll().stream()
@@ -225,19 +251,20 @@ public class AdminAuthService {
                     m.put("lastName", a.getLastName());
                     m.put("role", a.getRole().name());
                     m.put("totpEnabled", enabledById.getOrDefault(a.getId(), false));
+                    m.put("totpPortals", portalsById.getOrDefault(a.getId(), new ArrayList<>()));
                     accounts.add(m);
                 });
         return accounts;
     }
 
-    // HR-only: clear an account's authenticator app (lost phone). On their
-    // next sign-in they scan a new QR code.
+    // HR-only: clear an account's authenticator entries for BOTH dashboards
+    // (lost phone). On their next sign-in to each dashboard they scan a new QR.
     public Map<String, Object> resetTwoFactor(String callerEmail, Long adminId) {
         requireHR(callerEmail);
-        int updated = jdbc.update("UPDATE admins SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?", adminId);
-        if (updated == 0) {
+        if (!adminRepository.existsById(adminId)) {
             throw new RuntimeException("Account not found");
         }
+        jdbc.update("DELETE FROM admin_totp WHERE admin_id = ?", adminId);
         Map<String, Object> result = new HashMap<>();
         result.put("success", true);
         result.put("message", "Two-step sign-in was reset. They'll scan a new QR code on their next sign-in.");
@@ -254,16 +281,19 @@ public class AdminAuthService {
         }
     }
 
-    private Map<String, Object> totpRow(Long adminId) {
-        return jdbc.queryForMap("SELECT totp_secret, totp_enabled FROM admins WHERE id = ?", adminId);
+    // This account's authenticator entry for one dashboard, or null if none yet.
+    private Map<String, Object> totpRow(Long adminId, String portal) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT secret, enabled FROM admin_totp WHERE admin_id = ? AND portal = ?", adminId, portal);
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
-    private String newChallenge(String email, boolean setup) {
+    private String newChallenge(String email, String portal, boolean setup) {
         byte[] bytes = new byte[24];
         random.nextBytes(bytes);
         StringBuilder id = new StringBuilder();
         for (byte b : bytes) id.append(String.format("%02x", b));
-        challenges.put(id.toString(), new Challenge(email, setup));
+        challenges.put(id.toString(), new Challenge(email, portal, setup));
         return id.toString();
     }
 
@@ -272,9 +302,11 @@ public class AdminAuthService {
         challenges.entrySet().removeIf(e -> e.getValue().expiresAt < now);
     }
 
-    private String otpauthUrl(String email, String secret) {
-        String label = URLEncoder.encode(TOTP_ISSUER + ":" + email, StandardCharsets.UTF_8).replace("+", "%20");
-        return "otpauth://totp/" + label + "?secret=" + secret + "&issuer=" + TOTP_ISSUER
+    // Shows in the authenticator app as "admin.bhookme (email)" or "hr.bhookme (email)".
+    private String otpauthUrl(String portal, String email, String secret) {
+        String issuer = PORTAL_HR.equals(portal) ? "hr.bhookme" : "admin.bhookme";
+        String label = URLEncoder.encode(issuer + ":" + email, StandardCharsets.UTF_8).replace("+", "%20");
+        return "otpauth://totp/" + label + "?secret=" + secret + "&issuer=" + issuer
                 + "&algorithm=SHA1&digits=6&period=30";
     }
 

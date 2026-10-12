@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { pick, priceOf, imageOf } from '../components/MockMap';
+import { pick, priceOf, imageOf } from '../components/MapPanel';
 import { SERVICE_CATEGORIES } from '../data/serviceCategories';
 import { EXPERIENCE_CATEGORIES, findExperienceCategory, formatDuration } from '../data/experienceCategories';
+import { withCoords, sortByDistance, distanceLabel } from '../utils/geo';
 
 const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const API_BASE_URL = `${API_ORIGIN}/api`;
@@ -19,6 +20,9 @@ const TABS = [
   { id: 'services', label: 'Services', icon: '🛎️' },
   { id: 'places', label: 'Places', icon: '📍' },
 ];
+
+// Shown before typing, so guests see what the search understands.
+const SMART_EXAMPLES = ['1 bedroom', '2br houston', 'under 100', 'sleeps 4', 'pool', 'studio', 'SUV', 'Toyota 2020'];
 
 function readRecent() {
   try {
@@ -56,6 +60,18 @@ function money(n) {
   return Number.isFinite(num) && num > 0 ? `$${Math.round(num).toLocaleString()}` : null;
 }
 
+async function getJson(url) {
+  const res = await fetch(url);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((body && body.message) || `Search failed (status ${res.status}).`);
+  return body || {};
+}
+
+// ===== NEAR ME =====
+// Everything is shown, nearest first - no distance limit (like
+// Airbnb's "Nearby"). Listings without their own map position use
+// their city's center (see utils/geo.js).
+
 function Section({ title, count, onSeeAll, children }) {
   return (
     <section className="mb-10">
@@ -76,7 +92,7 @@ function Section({ title, count, onSeeAll, children }) {
 
 function ResultCard({ to, image, fallbackIcon, title, subtitle, price }) {
   return (
-    <Link to={to} className="group block">
+    <Link to={to} className="group block min-w-0">
       <div className="aspect-[4/3] rounded-xl overflow-hidden bg-gray-100">
         {image ? (
           <img src={image} alt={title} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
@@ -95,10 +111,21 @@ function ResultCard({ to, image, fallbackIcon, title, subtitle, price }) {
 
 const grid = 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4';
 
+// "1 bedroom · sleeps 2" style line for a home card.
+function homeFacts(h) {
+  const bits = [];
+  const beds = Number(h.bedrooms);
+  if (Number.isFinite(beds)) bits.push(beds === 0 ? 'Studio' : `${beds} bedroom${beds === 1 ? '' : 's'}`);
+  const guests = Number(h.max_guests);
+  if (Number.isFinite(guests) && guests > 0) bits.push(`sleeps ${guests}`);
+  return bits.join(' · ');
+}
+
 export default function ExplorePage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const urlQuery = params.get('q') || '';
+  const nearMode = !urlQuery && params.get('near') === '1';
   const [input, setInput] = useState(urlQuery);
   const [tab, setTab] = useState('all');
   const [data, setData] = useState(null);
@@ -107,6 +134,14 @@ export default function ExplorePage() {
   const [recent, setRecent] = useState(readRecent);
   const [popularPlaces, setPopularPlaces] = useState([]);
   const inputRef = useRef(null);
+
+  // Near me: where the visitor is, and what's around them.
+  // nearStatus: 'idle' | 'locating' | 'denied' | 'unsupported' | 'ready'
+  const [nearCoords, setNearCoords] = useState(null);
+  const [nearStatus, setNearStatus] = useState('idle');
+  const [nearAttempt, setNearAttempt] = useState(0);
+  const [nearHomes, setNearHomes] = useState(null);
+  const [nearLeases, setNearLeases] = useState(null);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -134,6 +169,10 @@ export default function ExplorePage() {
   }, [input]);
 
   // Search whenever the URL query changes.
+  // Homes and cars come from the SMART search (understands "1 bedroom",
+  // "2br", "under 100", "sleeps 4", "pool", "toyota 2020", small typos).
+  // Experiences and places still come from the word search. If the smart
+  // search ever fails, the word search's homes/cars are used instead.
   useEffect(() => {
     if (!urlQuery) {
       setData(null);
@@ -143,20 +182,39 @@ export default function ExplorePage() {
     let cancelled = false;
     setLoading(true);
     setError('');
-    fetch(`${API_BASE_URL}/properties/search/all?q=${encodeURIComponent(urlQuery)}`)
-      .then(async (res) => {
-        const body = await res.json().catch(() => null);
-        if (!res.ok) throw new Error((body && body.message) || `Search failed (status ${res.status}).`);
-        return body;
-      })
-      .then((body) => {
-        if (!cancelled) {
-          setData(body);
-          setRecent(saveRecent(urlQuery));
+    const q = encodeURIComponent(urlQuery);
+
+    Promise.allSettled([
+      getJson(`${API_BASE_URL}/properties/search/all?q=${q}`),
+      getJson(`${API_BASE_URL}/properties/search/smart?q=${q}&scope=all`),
+    ])
+      .then(([wordResult, smartResult]) => {
+        if (cancelled) return;
+        if (wordResult.status === 'rejected' && smartResult.status === 'rejected') {
+          throw wordResult.reason || new Error('Search failed.');
         }
+        const word = wordResult.status === 'fulfilled' ? wordResult.value : {};
+        const smart = smartResult.status === 'fulfilled' ? smartResult.value : null;
+
+        const merged = {
+          query: urlQuery,
+          experiences: word.experiences || [],
+          places: word.places || [],
+          homes: smart ? smart.homes || [] : word.homes || [],
+          cars: smart ? smart.cars || [] : word.cars || [],
+          understood: smart && Array.isArray(smart.understood) ? smart.understood : [],
+          counts: {
+            experiences: word.counts?.experiences ?? (word.experiences || []).length,
+            places: word.counts?.places ?? (word.places || []).length,
+            homes: smart ? smart.counts?.homes ?? (smart.homes || []).length : word.counts?.homes ?? 0,
+            cars: smart ? smart.counts?.cars ?? (smart.cars || []).length : word.counts?.cars ?? 0,
+          },
+        };
+        setData(merged);
+        setRecent(saveRecent(urlQuery));
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message);
+        if (!cancelled) setError(err.message || 'Search failed.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -165,6 +223,54 @@ export default function ExplorePage() {
       cancelled = true;
     };
   }, [urlQuery]);
+
+  // Ask the browser for the visitor's location whenever Near me is on
+  // (also after a page refresh on /explore?near=1).
+  useEffect(() => {
+    if (!nearMode || nearCoords) return;
+    if (!navigator.geolocation) {
+      setNearStatus('unsupported');
+      return;
+    }
+    setNearStatus('locating');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setNearCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setNearStatus('ready');
+      },
+      () => setNearStatus('denied'),
+      { enableHighAccuracy: false, maximumAge: 10 * 60 * 1000, timeout: 15000 }
+    );
+  }, [nearMode, nearCoords, nearAttempt]);
+
+  // Load homes and leases once Near me is on.
+  useEffect(() => {
+    if (!nearMode || nearHomes) return;
+    Promise.all([
+      fetch(`${API_BASE_URL}/properties`).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      fetch(`${API_BASE_URL}/leases`).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    ]).then(async ([homeList, leaseList]) => {
+      const [homesLocated, leasesLocated] = await Promise.all([
+        withCoords(Array.isArray(homeList) ? homeList : []),
+        withCoords(Array.isArray(leaseList) ? leaseList : []),
+      ]);
+      setNearHomes(homesLocated);
+      setNearLeases(leasesLocated);
+    });
+  }, [nearMode, nearHomes]);
+
+  // Sort everything by distance from the visitor, nearest first.
+  const nearResults = useMemo(() => {
+    if (!nearCoords || !nearHomes) return null;
+    const wrap = (list) => sortByDistance(list || [], nearCoords).map((item) => ({ item, miles: item.miles }));
+    return { homes: wrap(nearHomes), leases: wrap(nearLeases) };
+  }, [nearCoords, nearHomes, nearLeases]);
+
+  const startNearMe = () => {
+    setInput('');
+    setTab('all');
+    setParams({ near: '1' }, { replace: false });
+  };
 
   // Services are a fixed list, matched on this side.
   const services = useMemo(() => {
@@ -180,6 +286,7 @@ export default function ExplorePage() {
   const cars = data?.cars || [];
   const experiences = data?.experiences || [];
   const places = data?.places || [];
+  const understood = data?.understood || [];
   const counts = {
     homes: data?.counts?.homes ?? homes.length,
     cars: data?.counts?.cars ?? cars.length,
@@ -227,7 +334,7 @@ export default function ExplorePage() {
             type="search"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Search homes, cars, experiences, services, cities..."
+            placeholder="Try 2 bedroom houston, under 100, pool, SUV..."
             aria-label="Search bhookme"
             className="flex-1 min-w-0 text-base outline-none bg-transparent"
           />
@@ -248,9 +355,127 @@ export default function ExplorePage() {
         </div>
       </form>
 
+      {/* Near me - like Airbnb's "Nearby" */}
+      {!urlQuery && !nearMode && (
+        <button
+          type="button"
+          onClick={startNearMe}
+          className="mt-2 w-full flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:shadow-md hover:border-gray-300 transition text-left"
+        >
+          <span className="w-12 h-12 shrink-0 rounded-xl bg-rose-50 flex items-center justify-center text-2xl" aria-hidden="true">
+            📍
+          </span>
+          <span className="min-w-0">
+            <span className="block font-semibold">Near me</span>
+            <span className="block text-sm text-gray-500">Find homes and monthly stays around you</span>
+          </span>
+        </button>
+      )}
+
+      {/* Near me results */}
+      {nearMode && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <h2 className="text-xl font-semibold">📍 Near you</h2>
+            <button
+              type="button"
+              onClick={() => setParams({}, { replace: false })}
+              className="text-sm font-semibold underline shrink-0"
+            >
+              Close
+            </button>
+          </div>
+
+          {nearStatus === 'locating' && <p className="text-gray-500">Finding your location...</p>}
+
+          {(nearStatus === 'denied' || nearStatus === 'unsupported') && (
+            <div className="border border-dashed border-gray-300 rounded-xl px-4 py-8 text-center">
+              <p className="font-semibold">We couldn't get your location</p>
+              <p className="text-sm text-gray-500 mt-1">
+                Allow location for bhookme in your browser settings and try again, or search a city instead.
+              </p>
+              <button
+                type="button"
+                onClick={() => setNearAttempt((n) => n + 1)}
+                className="mt-4 px-4 py-2 rounded-full bg-rose-500 text-white text-sm font-semibold"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          {nearStatus === 'ready' && !nearResults && <p className="text-gray-500">Loading places near you...</p>}
+
+          {nearResults && (
+            <>
+              <p className="text-sm text-gray-500 mb-4">Closest first, based on your location.</p>
+
+              {nearResults.homes.length > 0 && (
+                <Section title="Homes" count={nearResults.homes.length}>
+                  <div className={grid}>
+                    {nearResults.homes.map(({ item: h, miles }) => (
+                      <ResultCard
+                        key={h.id}
+                        to={`/property/${h.id}`}
+                        image={imageOf(h)}
+                        fallbackIcon="🏠"
+                        title={pick(h, ['title', 'name']) || 'Home'}
+                        subtitle={[distanceLabel(miles), [pick(h, ['city']), pick(h, ['state'])].filter(Boolean).join(', ')]
+                          .filter(Boolean)
+                          .join(' · ')}
+                        price={money(priceOf(h)) ? `${money(priceOf(h))} night` : null}
+                      />
+                    ))}
+                  </div>
+                </Section>
+              )}
+
+              {nearResults.leases.length > 0 && (
+                <Section title="Monthly stays" count={nearResults.leases.length}>
+                  <div className={grid}>
+                    {nearResults.leases.map(({ item: l, miles }) => (
+                      <ResultCard
+                        key={l.id}
+                        to={`/lease/${l.id}`}
+                        image={absoluteUrl(l.imageUrls?.[0] || l.imageUrl)}
+                        fallbackIcon="🏠"
+                        title={l.title || 'Monthly stay'}
+                        subtitle={[distanceLabel(miles), [l.city, l.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
+                        price={money(l.monthlyRent) ? `${money(l.monthlyRent)} month` : null}
+                      />
+                    ))}
+                  </div>
+                </Section>
+              )}
+
+              {nearResults.homes.length === 0 && nearResults.leases.length === 0 && (
+                <p className="text-gray-500 text-sm py-8 text-center">No homes or monthly stays listed yet.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Before typing */}
-      {!urlQuery && (
+      {!urlQuery && !nearMode && (
         <div className="mt-4 space-y-8">
+          <section>
+            <h2 className="font-semibold mb-2">Search the way you talk</h2>
+            <div className="flex flex-wrap gap-2">
+              {SMART_EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  type="button"
+                  onClick={() => runSearch(ex)}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-gray-300 text-sm hover:border-gray-900"
+                >
+                  <span aria-hidden="true">✨</span>
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </section>
+
           {recent.length > 0 && (
             <section>
               <div className="flex items-center justify-between mb-2">
@@ -334,7 +559,7 @@ export default function ExplorePage() {
       {/* Results */}
       {urlQuery && (
         <div className="mt-2">
-          <div className="flex gap-2 overflow-x-auto pb-3 mb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex gap-2 overflow-x-auto pb-3 mb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {TABS.map((t) => {
               const count = t.id === 'all' ? total : counts[t.id];
               return (
@@ -353,6 +578,17 @@ export default function ExplorePage() {
             })}
           </div>
 
+          {understood.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
+              <span className="text-gray-500">Looking for:</span>
+              {understood.map((u) => (
+                <span key={u} className="px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-medium">
+                  {u}
+                </span>
+              ))}
+            </div>
+          )}
+
           {loading && !data && <p className="text-gray-500">Searching...</p>}
           {error && <p className="text-red-500 mb-4">{error}</p>}
 
@@ -360,7 +596,9 @@ export default function ExplorePage() {
             <div className="text-center py-16">
               <p className="text-4xl mb-3" aria-hidden="true">🔎</p>
               <p className="font-semibold">No results for "{urlQuery}"</p>
-              <p className="text-sm text-gray-500 mt-1">Try fewer words, a city name, or something like "studio", "SUV" or "tour".</p>
+              <p className="text-sm text-gray-500 mt-1">
+                Try fewer words, or something like "1 bedroom", "under 100", "Houston", "SUV" or "tour".
+              </p>
             </div>
           )}
 
@@ -394,7 +632,9 @@ export default function ExplorePage() {
                         image={imageOf(h)}
                         fallbackIcon="🏠"
                         title={pick(h, ['title', 'name']) || 'Home'}
-                        subtitle={[pick(h, ['city']), pick(h, ['state'])].filter(Boolean).join(', ')}
+                        subtitle={[[pick(h, ['city']), pick(h, ['state'])].filter(Boolean).join(', '), homeFacts(h)]
+                          .filter(Boolean)
+                          .join(' · ')}
                         price={money(priceOf(h)) ? `${money(priceOf(h))} night` : null}
                       />
                     ))}
