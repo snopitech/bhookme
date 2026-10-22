@@ -4,6 +4,9 @@ import { useAuth } from '../context/AuthContext';
 import { MapButton } from './MapPanel';
 import SearchBar from './SearchBar';
 
+// bhookme roof "b" icon, stored in the bhookme-images R2 bucket.
+const LOGO_ICON_URL = 'https://pub-5a9bbe3019424f9fa1ac570f455abcd1.r2.dev/apple-touch-icon.png?v=2';
+
 const CATEGORIES = [
   { label: 'Homes', path: '/' },
   { label: 'Experiences', path: '/category/experiences' },
@@ -52,17 +55,28 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-50 bg-white border-b border-gray-200">
-      <div className="max-w-7xl mx-auto px-6 py-4 flex flex-wrap md:flex-nowrap items-center justify-between gap-x-4 gap-y-3">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex flex-wrap md:flex-nowrap items-center justify-between gap-x-4 gap-y-3 min-w-0">
         <div className="flex items-center gap-3 shrink-0">
-          <Link to="/" className="text-2xl font-bold text-rose-500">
-            bhookme
+          {/* Logo: pink roof "b" icon + "bhookme" wordmark. Clicking it goes home. */}
+          <Link to="/" aria-label="bhookme home" className="flex items-center gap-2">
+            <img
+              src={LOGO_ICON_URL}
+              alt=""
+              aria-hidden="true"
+              className="h-8 w-8 sm:h-9 sm:w-9 rounded-lg"
+              width="36"
+              height="36"
+            />
+            <span className="text-2xl font-extrabold tracking-tight text-gray-900">
+              bhookme
+            </span>
           </Link>
           {/* Mobile only, and only on pages that have the map */}
           <MapButton />
         </div>
 
         {/* Live search: full-width second row on phones, centered pill on larger screens */}
-        <div className="order-last w-full md:order-none md:w-auto md:flex-1 md:max-w-xl">
+        <div className="order-last w-full min-w-0 md:order-none md:w-auto md:flex-1 md:max-w-xl">
           <SearchBar />
         </div>
 
@@ -163,14 +177,20 @@ export default function Header() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 pb-3 flex items-center gap-8 overflow-x-auto">
+      {/* Category tabs: ONE row that swipes left/right on small screens,
+          so more tabs can be added later without wrapping or pushing
+          the page wider. The scrollbar is hidden; the row just swipes. */}
+      <nav
+        aria-label="Categories"
+        className="max-w-7xl mx-auto px-4 sm:px-6 pb-2 sm:pb-3 flex items-center gap-6 sm:gap-8 overflow-x-auto overscroll-x-contain snap-x [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      >
         {CATEGORIES.map((cat) => {
           const active = location.pathname === cat.path;
           return (
             <Link
               key={cat.label}
               to={cat.path}
-              className={`text-sm font-bold whitespace-nowrap pb-1 border-b-2 transition ${
+              className={`snap-start shrink-0 text-sm font-bold whitespace-nowrap py-1.5 border-b-2 transition ${
                 active
                   ? 'border-rose-500 text-rose-500'
                   : 'border-transparent text-gray-500 hover:text-gray-900'
@@ -190,7 +210,7 @@ export default function Header() {
             entry point. */}
         <Link
           to={hostVerified ? '/host/dashboard' : '/become-host'}
-          className={`sm:hidden inline-flex items-center gap-1.5 text-sm font-bold whitespace-nowrap pb-1 border-b-2 transition ${
+          className={`sm:hidden snap-start shrink-0 inline-flex items-center gap-1.5 text-sm font-bold whitespace-nowrap py-1.5 border-b-2 transition ${
             location.pathname.startsWith('/host/') || location.pathname === '/become-host'
               ? 'border-rose-500 text-rose-500'
               : 'border-transparent text-gray-500 hover:text-gray-900'
@@ -199,7 +219,7 @@ export default function Header() {
           <span aria-hidden="true">🏠</span>
           {hostVerified ? 'Hosting' : 'Host'}
         </Link>
-      </div>
+      </nav>
     </header>
   );
 }
